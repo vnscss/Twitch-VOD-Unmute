@@ -8,8 +8,8 @@
  *   1. watch for Twitch's "-muted" media playlists
  *   2. read the playlist from the page context
  *   3. probe the unmuted segment URLs on Twitch's CDN
- *   4. hold player requests until the scan completes, then redirect the ones
- *      whose original segment is still available
+ *   4. hold each muted segment request until that segment is checked, then
+ *      redirect the ones whose original is still available
  *   5. colour the seekbar so the recovered ranges are visible
  */
 'use strict';
@@ -21,7 +21,8 @@ const PROBE_ATTEMPTS = 3;
 const PROBE_CONCURRENCY = 6;
 const PROBE_CACHE_LIMIT = 2000;
 const SEEN_TTL_MS = 10 * 1000;
-const PENDING_TIMEOUT_MS = 15 * 1000;
+const PENDING_TIMEOUT_MS = 8 * 1000;
+const CHECKED_SEGMENT_LIMIT = 2000;
 
 let redirectCache = null;
 let cacheLoaded = false;
@@ -32,24 +33,23 @@ const internalUrls = new Set();
 const probeUrls = new Set();
 const seenMasterPlaylists = new Map();
 const seenMutedPlaylists = new Map();
-const pendingByDirectory = new Map();
+const pendingBySegment = new Map();
+const checkedSegments = new Set();
 
 /* ------------------------------------------------------------------ */
 /* Small helpers                                                       */
 /* ------------------------------------------------------------------ */
 
-function directoryOf(url) {
-  return String(url).replace(/[^/]*$/, '');
-}
-
-function isSegmentUrl(url) {
+function isMutedSegmentUrl(url) {
   let pathname;
   try {
     pathname = new URL(url).pathname;
   } catch (_) {
     pathname = String(url).split('?')[0].split('#')[0];
   }
-  return /(?:^|\/)\d+(?:-muted)?\.(?:ts|mp4)$/i.test(pathname);
+  // Only muted segments can need a redirect. Waiting on ordinary segments
+  // would add latency to every request and can trigger Twitch's #2000 error.
+  return /(?:^|\/)\d+-muted\.(?:ts|mp4)$/i.test(pathname);
 }
 
 function isRecent(map, url) {
@@ -64,25 +64,35 @@ function noteSeen(map, url) {
   }
 }
 
-function registerPending(directory) {
-  if (pendingByDirectory.has(directory)) return;
-  let resolve;
-  const promise = new Promise(done => { resolve = done; });
-  pendingByDirectory.set(directory, { promise, resolve });
+function pendingFor(url) {
+  let entry = pendingBySegment.get(url);
+  if (!entry) {
+    let resolve;
+    const promise = new Promise(done => { resolve = done; });
+    entry = { promise, resolve };
+    pendingBySegment.set(url, entry);
+  }
+  return entry;
 }
 
-function resolvePending(url) {
-  const directory = directoryOf(url);
-  const entry = pendingByDirectory.get(directory);
-  if (!entry) return;
-  entry.resolve();
-  pendingByDirectory.delete(directory);
+function markSegmentChecked(url) {
+  checkedSegments.add(url);
+  if (checkedSegments.size > CHECKED_SEGMENT_LIMIT) {
+    const oldest = checkedSegments.values().next().value;
+    checkedSegments.delete(oldest);
+  }
+
+  const entry = pendingBySegment.get(url);
+  if (entry) {
+    entry.resolve();
+    pendingBySegment.delete(url);
+  }
 }
 
-async function waitForPending(url) {
-  const entry = pendingByDirectory.get(directoryOf(url));
-  if (!entry) return;
+async function waitForSegment(url) {
+  if (checkedSegments.has(url)) return;
 
+  const entry = pendingFor(url);
   let timer;
   try {
     await Promise.race([
@@ -91,6 +101,28 @@ async function waitForPending(url) {
     ]);
   } finally {
     clearTimeout(timer);
+    pendingBySegment.delete(url);
+  }
+}
+
+// If a scan fails or is cancelled, do not leave player requests hanging.
+function releasePlaylistSegments(playlistUrl) {
+  let prefix;
+  try {
+    prefix = new URL(playlistUrl).pathname.replace(/[^/]*$/, '');
+  } catch (_) {
+    prefix = String(playlistUrl).split('?')[0].replace(/[^/]*$/, '');
+  }
+  for (const url of Array.from(pendingBySegment.keys())) {
+    let pathname;
+    try {
+      pathname = new URL(url).pathname;
+    } catch (_) {
+      pathname = String(url).split('?')[0];
+    }
+    if (pathname.startsWith(prefix) && isMutedSegmentUrl(url)) {
+      markSegmentChecked(url);
+    }
   }
 }
 
@@ -175,7 +207,7 @@ async function pageProbe(url) {
   // see constants from the background scope.
   for (let attempt = 0; attempt < 3; attempt++) {
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), 6000);
+    const timer = setTimeout(() => controller.abort(), 2500);
     try {
       response = await fetch(url, {
         headers: { Range: 'bytes=0-1' },
@@ -308,13 +340,20 @@ browser.webRequest.onBeforeRequest.addListener(
     if (details.tabId < 0) return {};
     if (internalUrls.has(details.url) || probeUrls.has(details.url)) return {};
 
-    // The player requests segments immediately after the playlist arrives.
-    // Hold them until the corresponding scan has installed its redirects.
-    if (isSegmentUrl(details.url)) await waitForPending(details.url);
-
     const redirects = await getRedirects();
     const target = redirects[details.url];
-    return target ? { redirectUrl: target } : {};
+    if (target) return { redirectUrl: target };
+
+    // The player requests muted segments immediately after the playlist
+    // arrives. Wait only for this segment, never for the whole playlist scan.
+    if (isMutedSegmentUrl(details.url)) {
+      await waitForSegment(details.url);
+      const updated = await getRedirects();
+      const newTarget = updated[details.url];
+      return newTarget ? { redirectUrl: newTarget } : {};
+    }
+
+    return {};
   },
   {
     urls: ['https://*.cloudfront.net/*', 'https://*.ttvnw.net/*'],
@@ -356,7 +395,6 @@ browser.webRequest.onCompleted.addListener(
     if (isRecent(seenMutedPlaylists, details.url)) return;
     noteSeen(seenMutedPlaylists, details.url);
 
-    registerPending(directoryOf(details.url));
     queue.push({ tabId: details.tabId, url: details.url });
     if (!processing) processQueue();
   },
@@ -474,6 +512,11 @@ async function processPlaylist(item) {
         if (found.quality !== currentQuality) lowerQuality++;
       }
       results.push({ number: segment.number, quality: found ? found.quality : null });
+
+      // Release the player's request for this specific segment as soon as it
+      // has been checked. `redirects` is the live in-memory cache, so a waiter
+      // that resumes here immediately sees the new mapping.
+      markSegmentChecked(mutedUrl);
     }
   }
 
@@ -518,7 +561,7 @@ async function processQueue() {
     } catch (error) {
       console.error('[tvu] playlist processing failed', error);
     } finally {
-      resolvePending(item.url);
+      releasePlaylistSegments(item.url);
     }
   }
   processing = false;

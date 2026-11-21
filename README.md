@@ -86,9 +86,9 @@ same `service_worker`/DNR combination, so this port uses:
 - `browser.storage.sync` for settings and `browser.storage.session` for
   per-session redirects, probe results, and statistics.
 
-Player segment requests are held briefly while the scan runs so the first
-segments are not missed. The extension's own playlist reads are ignored to
-avoid rescanning its own traffic.
+Only muted segment requests are held, and only until that individual segment
+has been checked. Already-unmuted segments are never delayed. The extension's
+own playlist reads are ignored to avoid rescanning its own traffic.
 
 ## Permissions
 
