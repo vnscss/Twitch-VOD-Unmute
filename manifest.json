@@ -32,8 +32,9 @@
     "webRequestBlocking"
   ],
   "host_permissions": [
-    "https://www.twitch.tv/*",
+    "https://*.twitch.tv/*",
     "https://*.cloudfront.net/*",
-    "https://usher.ttvnw.net/*"
+    "https://*.ttvnw.net/*",
+    "https://*.akamaized.net/*"
   ]
 }

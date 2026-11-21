@@ -83,8 +83,9 @@ same `service_worker`/DNR combination, so this port uses:
 - `webRequest.onBeforeRequest` with `blocking` to redirect segment requests.
 - `browser.scripting.executeScript` in the page's `MAIN` world to read
   playlists and probe unmuted segments with CORS-compatible requests.
+- Redirect keys ignore query strings/tokens on segment requests.
 - `browser.storage.sync` for settings and `browser.storage.session` for
-  per-session redirects, probe results, and statistics.
+  per-session redirects, positive probe results, and statistics.
 
 Only muted segment requests are held, and only until that individual segment
 has been checked. Already-unmuted segments are never delayed. The extension's
@@ -98,9 +99,10 @@ own playlist reads are ignored to avoid rescanning its own traffic.
 | `scripting` | Run playlist reads/probes in the Twitch page context. |
 | `tabs` | Clean up per-tab state when a tab closes. |
 | `storage` | Settings and session state. |
-| `https://www.twitch.tv/*` | The player page. |
-| `https://*.cloudfront.net/*` | VOD playlists and segments. |
-| `https://usher.ttvnw.net/*` | Master playlist / quality and codec information. |
+| `https://*.twitch.tv/*` | The player page and Twitch-hosted media. |
+| `https://*.cloudfront.net/*` | VOD playlists and segments (CloudFront VOD cluster). |
+| `https://*.ttvnw.net/*` | VOD/live playlists and segments on Twitch's own CDN hosts. |
+| `https://*.akamaized.net/*` | VOD playlists and segments on the Akamai VOD cluster. |
 
 No data is collected or sent anywhere by this extension.
 

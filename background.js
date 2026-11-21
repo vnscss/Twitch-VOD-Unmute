@@ -17,11 +17,15 @@
 const Core = globalThis.TVUCore;
 const SETTINGS_KEYS = Object.keys(Core.DEFAULT_SETTINGS);
 const PROBE_TTL_MS = 10 * 60 * 1000;
-const PROBE_ATTEMPTS = 3;
-const PROBE_CONCURRENCY = 6;
+// Twitch's CDN can be slow; a 2.5s abort made otherwise-available segments
+// look purged. Keep these values in sync with the literals in pageProbe().
+const PROBE_ATTEMPTS = 2;
+const PROBE_TIMEOUT_MS = 6000;
+const PROBE_CONCURRENCY = 12;
 const PROBE_CACHE_LIMIT = 2000;
 const SEEN_TTL_MS = 10 * 1000;
-const PENDING_TIMEOUT_MS = 8 * 1000;
+// Long enough to cover one full probe attempt chain plus queueing delay.
+const PENDING_TIMEOUT_MS = 15000;
 const CHECKED_SEGMENT_LIMIT = 2000;
 
 let redirectCache = null;
@@ -50,6 +54,17 @@ function isMutedSegmentUrl(url) {
   // Only muted segments can need a redirect. Waiting on ordinary segments
   // would add latency to every request and can trigger Twitch's #2000 error.
   return /(?:^|\/)\d+-muted\.(?:ts|mp4)$/i.test(pathname);
+}
+
+// The player can append query parameters/tokens to a segment request. Match
+// redirects by origin + pathname so the mapping survives those differences.
+function segmentKey(url) {
+  try {
+    const parsed = new URL(url);
+    return parsed.origin + parsed.pathname;
+  } catch (_) {
+    return String(url).split('?')[0].split('#')[0];
+  }
 }
 
 function isRecent(map, url) {
@@ -203,11 +218,11 @@ async function pageProbe(url) {
   let response = null;
   let errors = 0;
 
-  // Keep these literals: this function is serialised into the page and cannot
-  // see constants from the background scope.
-  for (let attempt = 0; attempt < 3; attempt++) {
+  // Keep these literals in sync with PROBE_ATTEMPTS/PROBE_TIMEOUT_MS: this
+  // function is serialised into the page and cannot see background constants.
+  for (let attempt = 0; attempt < 2; attempt++) {
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), 2500);
+    const timer = setTimeout(() => controller.abort(), 6000);
     try {
       response = await fetch(url, {
         headers: { Range: 'bytes=0-1' },
@@ -366,24 +381,30 @@ browser.webRequest.onBeforeRequest.addListener(
     if (details.tabId < 0) return {};
     if (internalUrls.has(details.url) || probeUrls.has(details.url)) return {};
 
+    const key = segmentKey(details.url);
     const redirects = await getRedirects();
-    const target = redirects[details.url];
+    const target = redirects[key];
     if (target) return { redirectUrl: target };
 
     // The player requests muted segments immediately after the playlist
     // arrives. Wait only for this segment, never for the whole playlist scan.
     if (isMutedSegmentUrl(details.url)) {
-      await waitForSegment(details.url);
+      await waitForSegment(key);
       const updated = await getRedirects();
-      const newTarget = updated[details.url];
+      const newTarget = updated[key];
       return newTarget ? { redirectUrl: newTarget } : {};
     }
 
     return {};
   },
   {
-    urls: ['https://*.cloudfront.net/*', 'https://*.ttvnw.net/*'],
-    types: ['xmlhttprequest', 'media']
+    urls: [
+      'https://*.cloudfront.net/*',
+      'https://*.ttvnw.net/*',
+      'https://*.akamaized.net/*',
+      'https://*.twitch.tv/*'
+    ],
+    types: ['xmlhttprequest', 'media', 'other']
   },
   ['blocking']
 );
@@ -425,8 +446,13 @@ browser.webRequest.onCompleted.addListener(
     if (!processing) processQueue();
   },
   {
-    urls: ['https://*.cloudfront.net/*', 'https://*.ttvnw.net/*'],
-    types: ['xmlhttprequest', 'media']
+    urls: [
+      'https://*.cloudfront.net/*',
+      'https://*.ttvnw.net/*',
+      'https://*.akamaized.net/*',
+      'https://*.twitch.tv/*'
+    ],
+    types: ['xmlhttprequest', 'media', 'other']
   }
 );
 
@@ -452,6 +478,8 @@ async function probe(tabId, url) {
   const cache = await sessionGet('probes', {});
   const hit = cache[url];
   if (hit && Date.now() - hit.at < PROBE_TTL_MS) return hit.result;
+  // A stale failure must not keep a segment muted for the rest of the session.
+  delete cache[url];
 
   probeUrls.add(url);
   let result;
@@ -461,18 +489,22 @@ async function probe(tabId, url) {
     probeUrls.delete(url);
   }
 
-  cache[url] = { at: Date.now(), result };
-  const keys = Object.keys(cache);
-  if (keys.length > PROBE_CACHE_LIMIT) {
-    for (const key of keys.slice(0, keys.length - PROBE_CACHE_LIMIT)) delete cache[key];
+  // Only remember positive results. A transient network error should be
+  // retried on the next scan instead of being cached as "purged".
+  if (Core.isAvailable(result.status)) {
+    cache[url] = { at: Date.now(), result };
+    const keys = Object.keys(cache);
+    if (keys.length > PROBE_CACHE_LIMIT) {
+      for (const key of keys.slice(0, keys.length - PROBE_CACHE_LIMIT)) delete cache[key];
+    }
   }
   await sessionSet('probes', cache);
   return result;
 }
 
-async function rememberTabUrls(tabId, urls) {
+async function rememberTabUrls(tabId, keys) {
   const map = await sessionGet('tabUrls', {});
-  map[tabId] = Array.from(new Set((map[tabId] || []).concat(urls)));
+  map[tabId] = Array.from(new Set((map[tabId] || []).concat(keys)));
   await sessionSet('tabUrls', map);
 }
 
@@ -504,7 +536,7 @@ async function processPlaylist(item) {
 
   const redirects = await getRedirects();
   const results = [];
-  const touchedUrls = [];
+  const touchedKeys = [];
   let restored = 0;
   let lowerQuality = 0;
   let failedProbes = 0;
@@ -530,10 +562,11 @@ async function processPlaylist(item) {
       }
 
       const mutedUrl = url.replace(/[^/]*$/, segment.name);
-      touchedUrls.push(mutedUrl);
+      const key = segmentKey(mutedUrl);
+      touchedKeys.push(key);
 
       if (found) {
-        redirects[mutedUrl] = found.target;
+        redirects[key] = found.target;
         restored++;
         if (found.quality !== currentQuality) lowerQuality++;
       }
@@ -542,7 +575,7 @@ async function processPlaylist(item) {
       // Release the player's request for this specific segment as soon as it
       // has been checked. `redirects` is the live in-memory cache, so a waiter
       // that resumes here immediately sees the new mapping.
-      markSegmentChecked(mutedUrl);
+      markSegmentChecked(key);
     }
   }
 
@@ -550,7 +583,7 @@ async function processPlaylist(item) {
   await Promise.all(Array.from({ length: workers }, worker));
 
   await putRedirects(redirects);
-  await rememberTabUrls(tabId, touchedUrls);
+  await rememberTabUrls(tabId, touchedKeys);
 
   const stats = {
     tabId,

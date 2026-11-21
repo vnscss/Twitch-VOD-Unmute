@@ -187,11 +187,11 @@ async function scan(harness) {
   await waitFor(() => harness.session.stats && harness.session.stats[TAB_ID]);
 }
 
-async function redirectFor(harness, segmentName) {
+async function redirectFor(harness, segmentName, query = '') {
   const listener = harness.listeners.beforeRequest[0];
   const response = await listener.fn({
     tabId: TAB_ID,
-    url: PLAYLIST_URL.replace(/[^/]*$/, segmentName),
+    url: PLAYLIST_URL.replace(/[^/]*$/, segmentName) + query,
     type: 'xmlhttprequest'
   });
   // The response comes from the VM realm, so compare plain values.
@@ -214,6 +214,38 @@ test('redirects available segments and leaves purged ones muted', async () => {
   assert.equal(stats.stats.total, 4);
   assert.equal(stats.stats.restored, 2);
   assert.equal(stats.stats.lowerQuality, 0);
+});
+
+test('redirects segment requests that carry query tokens', async () => {
+  const harness = createHarness();
+  await scan(harness);
+
+  assert.deepEqual(await redirectFor(harness, '0-muted.ts', '?token=abc'), {
+    redirectUrl: Core.buildUnmutedUrl(PLAYLIST_URL, '0-muted.ts', '720p60')
+  });
+});
+
+test('observes every supported CDN host', async () => {
+  const harness = createHarness();
+  const cdnListeners = [harness.listeners.beforeRequest[0],
+    ...harness.listeners.completed].filter(entry =>
+    entry.filter.urls.includes('https://*.cloudfront.net/*'));
+  assert.equal(cdnListeners.length, 2);
+  for (const entry of cdnListeners) {
+    for (const pattern of ['https://*.cloudfront.net/*', 'https://*.ttvnw.net/*',
+      'https://*.akamaized.net/*', 'https://*.twitch.tv/*']) {
+      assert.ok(entry.filter.urls.includes(pattern), 'missing filter: ' + pattern);
+    }
+  }
+});
+
+test('does not cache failed probes as purged segments', async () => {
+  const harness = createHarness();
+  await scan(harness);
+
+  const cached = harness.session.probes || {};
+  const unavailable = Core.buildUnmutedUrl(PLAYLIST_URL, '3-muted.ts', '720p60');
+  assert.equal(Object.prototype.hasOwnProperty.call(cached, unavailable), false);
 });
 
 test('holds segment requests until the scan finishes', async () => {

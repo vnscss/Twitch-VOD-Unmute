@@ -130,8 +130,8 @@ def build_test_extension(directory: Path) -> None:
 
     background_path = directory / 'background.js'
     background = background_path.read_text()
-    old = "'https://*.cloudfront.net/*', 'https://*.ttvnw.net/*'"
-    new = old + ", 'http://127.0.0.1/*'"
+    old = "      'https://*.twitch.tv/*'\n"
+    new = "      'https://*.twitch.tv/*',\n      'http://127.0.0.1/*'\n"
     if background.count(old) != 2:
         raise RuntimeError('unexpected webRequest filter layout in background.js')
     background = background.replace(old, new)
