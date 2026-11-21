@@ -128,7 +128,7 @@ From the repository root:
 
 ```sh
 # Unit + integration tests (Node test runner; no browser required)
-node --test tests/core.test.js tests/integration.test.js
+node --test tests/core.test.js tests/integration.test.js tests/seekbar.test.js
 
 # Static extension validation
 web-ext lint --source-dir .

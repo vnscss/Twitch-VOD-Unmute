@@ -266,14 +266,40 @@ function paintSeekbar(bands, colours, currentQuality) {
 
     for (const band of state.bands) {
       const span = template.cloneNode(true);
+      if (span.removeAttribute) span.removeAttribute('data-test-selector');
       span.setAttribute('data-tvu-gen', String(generation));
       span.style.insetInlineStart = band.left + '%';
+      // Twitch has used both logical and physical offsets; set both so the
+      // band cannot collapse back to 0% on builds that still emit `left`.
+      span.style.left = band.left + '%';
+      span.style.right = 'auto';
       span.style.width = band.width + '%';
+      span.style.height = '100%';
+      span.style.opacity = '1';
+      span.style.pointerEvents = 'none';
+      span.style.boxShadow = 'inset 0 0 0 1px rgba(0, 0, 0, 0.55)';
 
       let colour = state.colours.quality;
       if (band.quality === null) colour = state.colours.muted;
       else if (band.quality === state.quality) colour = state.colours.unmuted;
-      span.style.backgroundColor = colour || 'transparent';
+      colour = colour || 'transparent';
+      span.style.backgroundColor = colour;
+
+      // Current Twitch markup nests a styled <span> inside .seekbar-segment.
+      // That inner span carries its own inset/width/background; without
+      // neutralising it, it paints over the band and the highlight is barely
+      // visible. Make it fill its parent and use the same colour.
+      for (const child of span.querySelectorAll('[style]')) {
+        if (child.removeAttribute) child.removeAttribute('data-test-selector');
+        child.style.insetInlineStart = '0%';
+        child.style.left = '0%';
+        child.style.right = 'auto';
+        child.style.width = '100%';
+        child.style.height = '100%';
+        child.style.opacity = '1';
+        child.style.backgroundColor = colour;
+        child.style.boxShadow = 'none';
+      }
 
       root.insertBefore(span, thumb);
     }
