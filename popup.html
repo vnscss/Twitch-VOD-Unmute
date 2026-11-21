@@ -1,0 +1,70 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Twitch VOD Unmute (Firefox)</title>
+  <link rel="stylesheet" href="popup.css">
+  <script src="src/core.js"></script>
+  <script src="popup.js" defer></script>
+</head>
+<body>
+  <header>
+    <h1>Twitch VOD Unmute</h1>
+    <p class="subtitle">Firefox reimplementation</p>
+  </header>
+
+  <section class="panel" aria-label="Last scan">
+    <h2>Last scan</h2>
+    <p id="stats" class="stats">Open a VOD to start scanning.</p>
+    <button id="reset" type="button">Clear recovered segments</button>
+  </section>
+
+  <section class="panel" aria-label="Options">
+    <h2>Options</h2>
+
+    <label class="row toggle">
+      <input type="checkbox" id="enabled" checked>
+      <span>Extension enabled</span>
+    </label>
+
+    <label class="row toggle">
+      <input type="checkbox" id="seekbar" checked>
+      <span>Colour the seekbar</span>
+    </label>
+
+    <label class="row toggle">
+      <input type="checkbox" id="quality" checked>
+      <span>Allow lower-quality segments</span>
+    </label>
+    <p class="hint">Only used when a lower quality shares the selected quality's codec.</p>
+
+    <div id="colours">
+      <div class="row colour-row">
+        <label for="unmutedColour">Recovered</label>
+        <input type="color" id="unmutedColourPicker" value="#00FF00" aria-label="Recovered segment colour picker">
+        <input type="text" id="unmutedColour" value="#00FF00" maxlength="7" spellcheck="false">
+      </div>
+      <div class="row colour-row">
+        <label for="qualityColour">Lower quality</label>
+        <input type="color" id="qualityColourPicker" value="#FFA500" aria-label="Lower quality segment colour picker">
+        <input type="text" id="qualityColour" value="#FFA500" maxlength="7" spellcheck="false">
+      </div>
+      <div class="row colour-row">
+        <label for="mutedColour">Still muted</label>
+        <input type="color" id="mutedColourPicker" value="#FF0000" aria-label="Muted segment colour picker">
+        <input type="text" id="mutedColour" value="#FF0000" maxlength="7" spellcheck="false">
+      </div>
+      <div class="row">
+        <label for="opacity">Opacity: <output id="opacityText">0.50</output></label>
+        <input type="range" id="opacity" min="0" max="1" step="0.05" value="0.5">
+      </div>
+    </div>
+  </section>
+
+  <footer>
+    <p>Refresh the VOD after changing an option.</p>
+    <p class="credit">Original idea: Evan99w's Chrome extension. This is an independent reimplementation.</p>
+  </footer>
+</body>
+</html>
