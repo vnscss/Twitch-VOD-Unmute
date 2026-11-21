@@ -126,22 +126,36 @@
   }
 
   /**
-   * Qualities to probe, highest first. Lower qualities are only useful when
-   * the requested quality advertises a codec, so we stay on the current
-   * quality when codec information is missing (avoids broken playback).
+   * Qualities to probe for an unmuted original.
+   *
+   * Twitch only publishes unmuted originals for some qualities. A player can
+   * select a low quality (especially in Firefox), so limiting the search to
+   * the current quality and *lower* qualities can miss every available copy.
+   * Try the current quality first, then any compatible higher qualities, and
+   * finally lower qualities when the user allows them. Without codec data we
+   * stay on the current quality to avoid a codec mismatch.
    */
   function qualitiesToTry(qualities, codecMap, current, allowLower) {
-    if (!allowLower) return [current];
+    const ladder = Array.isArray(qualities) && qualities.length
+      ? qualities
+      : DEFAULT_QUALITIES;
     const codec = codecMap && codecMap[current];
     if (!codec) return [current];
 
-    const start = Math.max(0, qualities.indexOf(current));
-    const result = [];
-    for (let i = start; i < qualities.length; i++) {
-      const q = qualities[i];
-      if (q === current || (codecMap && codecMap[q] === codec)) result.push(q);
+    const start = ladder.indexOf(current);
+    const higher = [];
+    const lower = [];
+    for (let i = 0; i < ladder.length; i++) {
+      if (i === start) continue;
+      const q = ladder[i];
+      if (q !== current && codecMap[q] !== codec) continue;
+      if (start !== -1 && i > start) lower.push(q);
+      else higher.push(q);
     }
-    return result.length ? result : [current];
+
+    const result = [current, ...higher];
+    if (allowLower) result.push(...lower);
+    return Array.from(new Set(result));
   }
 
   /** Group consecutive segments with the same quality into seekbar bands. */

@@ -16,7 +16,9 @@ When Twitch serves a muted VOD playlist, this extension:
 
 1. Detects the `index-muted-*.m3u8` media playlist.
 2. Reads the playlist and finds the muted `.ts`/`.mp4` segments.
-3. Probes the corresponding unmuted segment URLs in the quality ladder.
+3. Probes the corresponding unmuted segment URLs in the current quality,
+   then any codec-compatible higher qualities, then lower qualities when
+   enabled.
 4. Holds the player's segment requests until probing finishes.
 5. Redirects only the requests whose original segment is still available.
 6. Optionally colours the seekbar to show which parts were recovered.
@@ -66,7 +68,7 @@ Options:
 | --- | --- |
 | **Extension enabled** | Turns scanning and redirection off. Turning it off clears existing redirects. |
 | **Colour the seekbar** | Draws recovered/purged ranges over Twitch's seekbar. |
-| **Allow lower-quality segments** | Uses a lower quality only when it shares the current quality's base codec. |
+| **Allow lower-quality segments** | Also tries lower qualities after compatible higher qualities fail. |
 | **Recovered / Lower quality / Still muted** | Seekbar colours. |
 | **Opacity** | Alpha applied to the seekbar colours. |
 
@@ -83,7 +85,9 @@ same `service_worker`/DNR combination, so this port uses:
 - `webRequest.onBeforeRequest` with `blocking` to redirect segment requests.
 - `browser.scripting.executeScript` in the page's `MAIN` world to read
   playlists and probe unmuted segments with CORS-compatible requests.
-- Redirect keys ignore query strings/tokens on segment requests.
+- Redirect keys ignore query strings/tokens on segment requests. Unmuted
+originals are not available for every quality, so codec-compatible higher
+qualities are checked even when the player selected a low quality.
 - `browser.storage.sync` for settings and `browser.storage.session` for
   per-session redirects, positive probe results, and statistics.
 

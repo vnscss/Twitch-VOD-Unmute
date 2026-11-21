@@ -73,10 +73,21 @@ test('qualitiesToTry respects codec compatibility and the lower-quality option',
     '1080p60': 'avc1', '720p60': 'avc1', '480p30': 'avc1', '360p30': 'hvc1'
   };
 
-  assert.deepEqual(Core.qualitiesToTry(qualities, codecMap, '720p60', false), ['720p60']);
+  assert.deepEqual(Core.qualitiesToTry(qualities, codecMap, '720p60', false),
+    ['720p60', '1080p60']);
   assert.deepEqual(Core.qualitiesToTry(qualities, codecMap, '720p60', true),
-    ['720p60', '480p30']);
+    ['720p60', '1080p60', '480p30']);
   assert.deepEqual(Core.qualitiesToTry(qualities, {}, '720p60', true), ['720p60']);
+});
+
+test('qualitiesToTry also checks compatible higher qualities from a low current quality', () => {
+  const qualities = ['1080p60', '720p60', '480p30', '360p30', '160p30'];
+  const codecMap = Object.fromEntries(qualities.map(quality => [quality, 'avc1']));
+
+  assert.deepEqual(Core.qualitiesToTry(qualities, codecMap, '360p30', false),
+    ['360p30', '1080p60', '720p60', '480p30']);
+  assert.deepEqual(Core.qualitiesToTry(qualities, codecMap, '360p30', true),
+    ['360p30', '1080p60', '720p60', '480p30', '160p30']);
 });
 
 test('buildSeekbarBands groups contiguous segments and includes the last one', () => {
