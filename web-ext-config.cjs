@@ -3,6 +3,8 @@ module.exports = {
   // part of the packaged extension.
   ignoreFiles: [
     'tests/**',
+    'web-ext-artifacts/**',
+    'build-xpi.sh',
     'README.md',
     'PROVENANCE.md',
     'LICENSE',

@@ -40,11 +40,16 @@ The add-on is removed when Firefox restarts.
 web-ext run --source-dir .
 ```
 
-Build a packaged XPI with:
+Build a packaged XPI with the included script (requires `zip` and `python3`):
 
 ```sh
-web-ext build --source-dir .
+./build-xpi.sh
+# writes web-ext-artifacts/twitch-vod-unmute-firefox-<version>.xpi
 ```
+
+You can then install the `.xpi` from `about:addons` or by dragging it onto a
+Firefox window. `web-ext build --source-dir .` also works if you already have
+`web-ext` installed.
 
 Firefox 115 or newer is required (`strict_min_version` in `manifest.json`).
 
