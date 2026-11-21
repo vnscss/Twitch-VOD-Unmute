@@ -87,7 +87,9 @@ same `service_worker`/DNR combination, so this port uses:
   playlists and probe unmuted segments with CORS-compatible requests.
 - Redirect keys ignore query strings/tokens on segment requests. Unmuted
 originals are not available for every quality, so codec-compatible higher
-qualities are checked even when the player selected a low quality.
+qualities are checked even when the player selected a low quality. If the
+master playlist does not describe the selected quality (common for `chunked`),
+the whole ladder is tried with that quality first.
 - `browser.storage.sync` for settings and `browser.storage.session` for
   per-session redirects, positive probe results, and statistics.
 

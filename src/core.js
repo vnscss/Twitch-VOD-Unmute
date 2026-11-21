@@ -132,15 +132,21 @@
    * select a low quality (especially in Firefox), so limiting the search to
    * the current quality and *lower* qualities can miss every available copy.
    * Try the current quality first, then any compatible higher qualities, and
-   * finally lower qualities when the user allows them. Without codec data we
-   * stay on the current quality to avoid a codec mismatch.
+   * finally lower qualities when the user allows them. When codec data is
+   * missing (common for "chunked"), we still try the whole ladder with the
+   * current quality first.
    */
   function qualitiesToTry(qualities, codecMap, current, allowLower) {
     const ladder = Array.isArray(qualities) && qualities.length
       ? qualities
       : DEFAULT_QUALITIES;
     const codec = codecMap && codecMap[current];
-    if (!codec) return [current];
+    if (!codec) {
+      // Twitch does not always advertise the "chunked" variant (or its codec)
+      // in the master playlist. Trying only the current quality then recovers
+      // almost nothing, so fall back to the whole ladder with it first.
+      return Array.from(new Set([current, ...ladder]));
+    }
 
     const start = ladder.indexOf(current);
     const higher = [];

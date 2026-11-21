@@ -77,7 +77,10 @@ test('qualitiesToTry respects codec compatibility and the lower-quality option',
     ['720p60', '1080p60']);
   assert.deepEqual(Core.qualitiesToTry(qualities, codecMap, '720p60', true),
     ['720p60', '1080p60', '480p30']);
-  assert.deepEqual(Core.qualitiesToTry(qualities, {}, '720p60', true), ['720p60']);
+  assert.deepEqual(Core.qualitiesToTry(qualities, {}, '720p60', true),
+    ['720p60', '1080p60', '480p30', '360p30']);
+  assert.deepEqual(Core.qualitiesToTry(qualities, {}, 'chunked', false),
+    ['chunked', '1080p60', '720p60', '480p30', '360p30']);
 });
 
 test('qualitiesToTry also checks compatible higher qualities from a low current quality', () => {
