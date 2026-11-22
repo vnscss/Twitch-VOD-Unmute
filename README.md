@@ -64,11 +64,22 @@ web-ext run --source-dir .
 default. It requires `python3`, `zip`, `unzip`, and `web-ext` on `PATH`.
 
 ```sh
-./build-all.sh                 # Firefox XPI + Chrome Web Store ZIP
-./build-all.sh --firefox       # Firefox XPI only
-./build-all.sh --chrome        # Chrome ZIP only
-./build-all.sh --out DIR       # change the output directory
+./build-all.sh                       # Firefox XPI + Chrome Web Store ZIP
+./build-all.sh --firefox             # Firefox XPI only
+./build-all.sh --chrome              # Chrome ZIP only
+./build-all.sh --out DIR             # change the output directory
+./build-all.sh --bump patch          # 1.0.0 -> 1.0.1, then build both targets
+./build-all.sh --bump minor --chrome # 1.0.0 -> 1.1.0, Chrome only
+./build-all.sh --bump major --crx    # 1.0.0 -> 2.0.0, with a local CRX
 ```
+
+`--bump` requires `patch`, `minor`, or `major`. It updates `manifest.json`,
+`manifest.firefox.json`, and `manifest.chrome.json` together, then builds using
+the new version in the artifact filenames. It refuses to run if the manifests
+start with different versions. The flag only edits the manifests — commit and
+tag manually when you are ready to release. If a later build step fails (for
+example, a lint error), the version stays incremented in the working tree.
+`--bump` cannot be combined with `--verify-xpi`.
 
 Outputs:
 

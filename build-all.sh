@@ -13,6 +13,7 @@ DO_CRX=0
 DO_VERIFY=1
 STRICT_LINT=0
 VERIFY_XPI=""
+BUMP=""
 WEB_EXT="${WEB_EXT:-web-ext}"
 
 usage() {
@@ -25,6 +26,7 @@ Options:
   --sign           Ask AMO to sign the Firefox XPI (unlisted channel)
   --crx            Also pack a local Chrome CRX (needs CHROME_KEY)
   --out DIR        Output directory (default: web-ext-artifacts)
+  --bump LEVEL     Increment version (patch, minor, major) before building
   --verify-xpi FILE  Verify an existing Firefox XPI, then exit
   --no-verify      Skip local archive verification
   --strict-lint    Treat web-ext lint warnings as errors
@@ -46,6 +48,7 @@ while [ "$#" -gt 0 ]; do
     --sign) DO_SIGN=1; BUILD_FIREFOX=1; shift ;;
     --crx) DO_CRX=1; BUILD_CHROME=1; shift ;;
     --out) [ "$#" -ge 2 ] || { echo '--out requires a directory' >&2; exit 2; }; OUT_DIR="$2"; shift 2 ;;
+    --bump) [ "$#" -ge 2 ] || { echo '--bump requires patch, minor or major' >&2; exit 2; }; BUMP="$2"; shift 2 ;;
     --verify-xpi) [ "$#" -ge 2 ] || { echo '--verify-xpi requires a file' >&2; exit 2; }; VERIFY_XPI="$2"; shift 2 ;;
     --no-verify) DO_VERIFY=0; shift ;;
     --strict-lint) STRICT_LINT=1; shift ;;
@@ -57,6 +60,17 @@ done
 if [ "$BUILD_FIREFOX" -eq 0 ] && [ "$BUILD_CHROME" -eq 0 ]; then
   BUILD_FIREFOX=1
   BUILD_CHROME=1
+fi
+
+if [ -n "$BUMP" ]; then
+  case "$BUMP" in
+    patch|minor|major) ;;
+    *) echo "Invalid bump level: $BUMP (expected patch, minor or major)" >&2; exit 2 ;;
+  esac
+  if [ -n "$VERIFY_XPI" ]; then
+    echo '--bump cannot be combined with --verify-xpi' >&2
+    exit 2
+  fi
 fi
 
 need() {
@@ -78,16 +92,96 @@ if [ "$DO_SIGN" -eq 1 ] && [ -z "$VERIFY_XPI" ]; then
   : "${WEB_EXT_API_SECRET:?WEB_EXT_API_SECRET is required with --sign}"
 fi
 
-python3 - <<'PY'
+# Validate all three manifests, optionally bump them, and print the version
+# that the artifacts must use. The version line is edited textually so the
+# rest of each JSON file (including compact arrays) stays byte-identical.
+VERSION="$(python3 - "$BUMP" <<'PY'
 import json
-ff = json.load(open('manifest.firefox.json'))
-ch = json.load(open('manifest.chrome.json'))
-if ff.get('version') != ch.get('version'):
-    raise SystemExit('manifest versions differ: %s vs %s' % (
-        ff.get('version'), ch.get('version')))
-PY
+import os
+import re
+import sys
+import tempfile
 
-VERSION="$(python3 -c 'import json; print(json.load(open("manifest.firefox.json"))["version"])')"
+bump = sys.argv[1]
+files = ['manifest.json', 'manifest.firefox.json', 'manifest.chrome.json']
+version_re = re.compile(
+    r'^([ \t]*"version":[ \t]*)"(\d+\.\d+\.\d+)"([ \t]*,?[ \t]*\r?)$',
+    re.MULTILINE)
+
+originals = {}
+found = {}
+for filename in files:
+    with open(filename, 'r', encoding='utf-8', newline='') as handle:
+        text = handle.read()
+    matches = version_re.findall(text)
+    if len(matches) != 1:
+        raise SystemExit('%s: expected one version line, found %d' % (
+            filename, len(matches)))
+    originals[filename] = text
+    found[filename] = matches[0][1]
+
+versions = set(found.values())
+if len(versions) != 1:
+    raise SystemExit('manifest versions differ: %s' % ', '.join(
+        '%s=%s' % (name, found[name]) for name in files))
+version = versions.pop()
+
+if bump:
+    major, minor, patch = (int(part) for part in version.split('.'))
+    if bump == 'patch':
+        patch += 1
+    elif bump == 'minor':
+        minor += 1
+        patch = 0
+    else:
+        major += 1
+        minor = 0
+        patch = 0
+    new_version = '%d.%d.%d' % (major, minor, patch)
+
+    replaced = {}
+    for filename in files:
+        def substitute(match):
+            return match.group(1) + '"' + new_version + '"' + match.group(3)
+        new_text, count = version_re.subn(substitute, originals[filename])
+        if count != 1:
+            raise SystemExit('%s: version line was not replaced' % filename)
+        replaced[filename] = new_text
+
+    staged = []
+    committed = []
+    try:
+        for filename in files:
+            directory = os.path.dirname(os.path.abspath(filename))
+            fd, temp = tempfile.mkstemp(prefix='.tvu-version-', dir=directory)
+            staged.append((temp, filename))
+            with os.fdopen(fd, 'w', encoding='utf-8', newline='') as handle:
+                handle.write(replaced[filename])
+            os.chmod(temp, os.stat(filename).st_mode)
+        for temp, filename in staged:
+            os.replace(temp, filename)
+            committed.append(filename)
+    except Exception:
+        for filename in committed:
+            with open(filename, 'w', encoding='utf-8', newline='') as handle:
+                handle.write(originals[filename])
+        raise
+    finally:
+        for temp, _ in staged:
+            if os.path.exists(temp):
+                os.unlink(temp)
+
+    print('Version bumped: %s -> %s' % (version, new_version), file=sys.stderr)
+    version = new_version
+
+for filename in files:
+    with open(filename, 'r', encoding='utf-8') as handle:
+        if json.load(handle).get('version') != version:
+            raise SystemExit('%s: version verification failed after bump' % filename)
+
+print(version)
+PY
+)"
 mkdir -p "$OUT_DIR"
 OUT_ABS="$(cd "$OUT_DIR" && pwd)"
 
