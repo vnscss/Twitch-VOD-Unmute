@@ -21,14 +21,20 @@ When Twitch serves a muted VOD playlist, this extension:
 
 1. Detects the `index-muted-*.m3u8` media playlist.
 2. Reads the playlist and finds the muted `.ts`/`.mp4` segments.
-3. Reads the sibling `index-dvr.m3u8` playlist to learn the exact unmuted
-   filenames Twitch currently serves (for example `12-unmuted.mp4`).
-4. Probes those exact filenames first, then the legacy plain `12.mp4` name,
-   in the current quality, any codec-compatible higher qualities, and finally
-   lower qualities when enabled.
-5. Holds the player's segment requests until probing finishes.
+3. Reads the sibling `index-dvr.m3u8` playlist (tokenless first, then with the
+   player's query token if needed) to learn the exact unmuted filenames Twitch
+   currently serves (for example `12-unmuted.mp4`).
+4. Probes those exact filenames across qualities first, and only then tries
+   the legacy plain `12.mp4` name in compatible higher/lower qualities.
+5. Holds a muted segment request only while a VOD scan is active for that
+   exact segment; every other request passes through untouched.
 6. Redirects only the requests whose original segment is still available.
 7. Optionally colours the seekbar to show which parts were recovered.
+
+Live streams are explicitly out of scope. A muted playlist outside a
+`/vod/<id>/` CDN path is ignored without fetching DVR data, probing segments,
+or delaying any request. Navigating away from a VOD cancels an in-flight scan,
+releases waiting requests, and removes that tab's redirects/rules.
 
 Segments that Twitch has permanently purged remain muted; the extension cannot
 recreate audio that is no longer served by the CDN.
@@ -146,19 +152,30 @@ the playlist/probe layer. The Firefox-specific pieces are:
 - `browser.scripting.executeScript` in the page's `MAIN` world to read
   playlists and probe unmuted segments with CORS-compatible requests.
 - Redirect keys ignore query strings/tokens on segment requests. Exact
-unmuted filenames are read from `index-dvr.m3u8` before falling back to the
-legacy plain filenames. Unmuted originals are not available for every quality,
-so codec-compatible higher qualities are checked even when the player selected
-a low quality. If the master playlist does not describe the selected quality
-(common for `chunked`), the whole ladder is tried with that quality first.
+unmuted filenames are read from `index-dvr.m3u8` (with a token-preserving
+fallback) and are exhaustively probed before any legacy plain filename. This
+avoids multiplying requests for a segment that the DVR already identifies.
+Unmuted originals are not available for every quality, so codec-compatible
+higher qualities are checked even when the player selected a low quality. If
+the master playlist does not describe the selected quality (common for
+`chunked`), the whole ladder is tried with that quality first.
+- Playlists are deduplicated by tab and `origin + pathname`, so rotated player
+tokens do not queue duplicate full scans.
 - Probes send only `Range: bytes=0-1`. Extra cache headers can make Twitch's
 CDN reject an otherwise available segment with 403.
 - `browser.storage.sync` for settings and `browser.storage.session` for
   per-session redirects, positive probe results, and statistics.
 
-Only muted segment requests are held, and only until that individual segment
-has been checked. Already-unmuted segments are never delayed. The extension's
-own playlist reads are ignored to avoid rescanning its own traffic.
+Only muted segment requests belonging to an active VOD scan are held, and only
+until that individual segment has been checked. Already-unmuted segments and
+all live traffic are never delayed. The extension's own playlist reads are
+ignored to avoid rescanning its own traffic. A scan has a 60 s hard timeout, a
+14-probe-per-segment ceiling, and a 3000-probe-per-scan ceiling. It is cancelled
+when the tab leaves VOD context; waiting requests are released immediately.
+
+The popup shows scan diagnostics: DVR status, number of exact DVR names read,
+probe count, held request count, scan duration, and whether the current tab is
+a live stream that was ignored.
 
 ## Permissions
 
@@ -166,7 +183,7 @@ own playlist reads are ignored to avoid rescanning its own traffic.
 | --- | --- |
 | `webRequest`, `webRequestBlocking` | Observe playlists and redirect segment requests. |
 | `scripting` | Run playlist reads/probes in the Twitch page context. |
-| `tabs` | Clean up per-tab state when a tab closes. |
+| `tabs` | Clean up per-tab state when a tab closes or navigates away from a VOD. |
 | `storage` | Settings and session state. |
 | `https://*.twitch.tv/*` | The player page and Twitch-hosted media. |
 | `https://*.cloudfront.net/*` | VOD playlists and segments (CloudFront VOD cluster). |
@@ -219,8 +236,10 @@ was left muted.
   synthetic HLS playlist served from localhost.
 - Twitch can change its CDN paths, playlist format, headers, or codec layout.
   When that happens, detection or probing may need updating.
-- Live streams, ads, geo-blocked VODs, and subscriber-only VODs are out of
-  scope.
+- No authenticated live stream was used either; live handling is covered by
+  mocked browser tests that assert no DVR fetch, no probes, no held requests,
+  and no DNR rules. Ads, geo-blocked VODs, and subscriber-only VODs remain out
+  of scope.
 
 ## Credits and acknowledgments
 

@@ -17,6 +17,8 @@ const TAB_ID = 7;
 const PLAYLIST_URL =
   'https://vod123.cloudfront.net/vod/12345/720p60/index-muted-ABC123.m3u8';
 const DVR_URL = 'https://vod123.cloudfront.net/vod/12345/720p60/index-dvr.m3u8';
+const LIVE_PLAYLIST_URL =
+  'https://live123.cloudfront.net/live/alanzoka/index-muted-LIVE.m3u8';
 const PLAYLIST = ['#EXTM3U', '0-muted.ts', '1-muted.ts', '2-muted.ts'].join('\n');
 const DVR = ['#EXTM3U', '0-unmuted.ts', '1.ts', '2-unmuted.ts'].join('\n');
 
@@ -42,6 +44,7 @@ function createHarness() {
     installed: [],
     completed: [],
     removed: [],
+    updated: [],
     message: [],
     changed: []
   };
@@ -109,6 +112,7 @@ function createHarness() {
     },
     tabs: {
       onRemoved: { addListener: fn => listeners.removed.push(fn) },
+      onUpdated: { addListener: fn => listeners.updated.push(fn) },
       query: (info, cb) => cb([{ id: TAB_ID }])
     },
     declarativeNetRequest: {
@@ -240,4 +244,33 @@ test('disabling the extension clears DNR rules', async () => {
   await waitFor(() => harness.getSessionRules().length === 0);
 
   assert.equal(harness.getSessionRules().length, 0);
+});
+
+test('Chrome ignores live playlists and creates no DNR rules', async () => {
+  const harness = createHarness();
+  for (const fn of harness.listeners.installed) await fn({ reason: 'install' });
+
+  const muted = harness.listeners.completed.find(entry =>
+    entry.filter.urls.includes('https://*.cloudfront.net/*'));
+  await muted.fn({ tabId: TAB_ID, url: LIVE_PLAYLIST_URL, type: 'xmlhttprequest' });
+  await new Promise(resolve => setTimeout(resolve, 25));
+
+  assert.equal(harness.getSessionRules().length, 0);
+  assert.equal(harness.session.stats && harness.session.stats[TAB_ID], undefined);
+  assert.equal(harness.session['diagnostics:' + TAB_ID].mode, 'live');
+});
+
+test('navigating from a VOD to a live channel removes its DNR rules', async () => {
+  const harness = createHarness();
+  await startScan(harness);
+  assert.ok(harness.getSessionRules().length > 0);
+
+  assert.equal(harness.listeners.updated.length, 1);
+  for (const fn of harness.listeners.updated) {
+    await fn(TAB_ID, { url: 'https://www.twitch.tv/somechannel' });
+  }
+
+  assert.equal(harness.getSessionRules().length, 0);
+  const stats = await statsFor(harness);
+  assert.equal(stats.stats, null);
 });

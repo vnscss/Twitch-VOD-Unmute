@@ -27,6 +27,10 @@ const MASTER = [
   '#EXT-X-STREAM-INF:BANDWIDTH=200,CODECS="hvc1.1.6.L120,mp4a.40.2"',
   'https://vod123.cloudfront.net/vod/12345/360p30/index.m3u8'
 ].join('\n');
+const LIVE_PLAYLIST_URL =
+  'https://live123.cloudfront.net/live/alanzoka/index-muted-LIVE.m3u8';
+const LIVE_SEGMENT_URL =
+  'https://live123.cloudfront.net/live/alanzoka/12-muted.ts';
 const PLAYLIST = [
   '#EXTM3U',
   '#EXT-X-TARGETDURATION:10',
@@ -60,13 +64,20 @@ function createHarness({
   availableDvr = [],
   dvrPlaylist = false,
   injectDelay = 0,
-  injectDelayFor = null
+  injectDelayFor = null,
+  dvrDelay = 0,
+  playlistToken = '',
+  dvrRequiresToken = false
 } = {}) {
+  const playlistUrl = PLAYLIST_URL + playlistToken;
+  const dvrPlainUrl = Core.dvrPlaylistUrl(playlistUrl);
+  const dvrTokenUrl = Core.dvrPlaylistUrl(playlistUrl, true);
   const listeners = {
     installed: [],
     beforeRequest: [],
     completed: [],
     removed: [],
+    updated: [],
     message: [],
     changed: []
   };
@@ -85,14 +96,17 @@ function createHarness({
   }
 
   responses.set(MASTER_URL, response(true, 200, MASTER));
-  responses.set(PLAYLIST_URL, response(true, 200, PLAYLIST));
+  responses.set(playlistUrl, response(true, 200, PLAYLIST));
 
   if (dvrPlaylist || availableDvr.length) {
     const dvrLines = ['#EXTM3U', '#EXT-X-TARGETDURATION:10'];
     for (let n = 0; n < 4; n++) {
       dvrLines.push(availableDvr.includes(n) ? n + '-unmuted.ts' : n + '.ts');
     }
-    responses.set(DVR_URL, response(true, 200, dvrLines.join('\n')));
+    if (!dvrRequiresToken) responses.set(dvrPlainUrl, response(true, 200, dvrLines.join('\n')));
+    if (dvrRequiresToken || dvrTokenUrl !== dvrPlainUrl) {
+      responses.set(dvrTokenUrl, response(true, 200, dvrLines.join('\n')));
+    }
   }
 
   for (let n = 0; n < 4; n++) {
@@ -132,9 +146,9 @@ function createHarness({
     },
     scripting: {
       executeScript: async ({ func, args }) => {
-        const delay = injectDelayFor
-          ? injectDelayFor((args || [])[0]) || 0
-          : injectDelay;
+        const firstArg = (args || [])[0];
+        let delay = injectDelayFor ? injectDelayFor(firstArg) || 0 : injectDelay;
+        if (!delay && dvrDelay && firstArg === dvrTokenUrl) delay = dvrDelay;
         if (delay) await new Promise(resolve => setTimeout(resolve, delay));
         try {
           return [{ result: await func(...(args || [])) }];
@@ -157,6 +171,7 @@ function createHarness({
     },
     tabs: {
       onRemoved: { addListener: fn => listeners.removed.push(fn) },
+      onUpdated: { addListener: fn => listeners.updated.push(fn) },
       query: async () => [{ id: TAB_ID }]
     }
   };
@@ -188,7 +203,7 @@ function createHarness({
   }
 
   return { listeners, sync, session, browser, context, probeCalls,
-    allowLowerQuality, injectDelay };
+    allowLowerQuality, injectDelay, playlistUrl, dvrPlainUrl, dvrTokenUrl };
 }
 
 async function startScan(harness) {
@@ -205,7 +220,7 @@ async function startScan(harness) {
   assert.ok(usher && muted, 'network listeners registered');
 
   await usher.fn({ tabId: TAB_ID, url: MASTER_URL, type: 'xmlhttprequest' });
-  await muted.fn({ tabId: TAB_ID, url: PLAYLIST_URL, type: 'xmlhttprequest' });
+  await muted.fn({ tabId: TAB_ID, url: harness.playlistUrl, type: 'xmlhttprequest' });
 }
 
 async function scan(harness) {
@@ -217,7 +232,7 @@ async function redirectFor(harness, segmentName, query = '') {
   const listener = harness.listeners.beforeRequest[0];
   const response = await listener.fn({
     tabId: TAB_ID,
-    url: PLAYLIST_URL.replace(/[^/]*$/, segmentName) + query,
+    url: harness.playlistUrl.replace(/[^/]*$/, segmentName) + query,
     type: 'xmlhttprequest'
   });
   // The response comes from the VM realm, so compare plain values.
@@ -450,4 +465,135 @@ test('the popup clear button empties stored state', async () => {
   const answer = await harness.listeners.message[0]({ type: 'tvu:stats', clear: true });
   assert.equal(answer.stats, null);
   assert.deepEqual(await redirectFor(harness, '0-muted.ts'), {});
+});
+
+test('live playlists and live segments are completely ignored', async () => {
+  const harness = createHarness();
+  for (const fn of harness.listeners.installed) await fn({ reason: 'install' });
+
+  const muted = harness.listeners.completed.find(entry =>
+    entry.filter.urls.some(url => url.includes('cloudfront.net')));
+  await muted.fn({ tabId: TAB_ID, url: LIVE_PLAYLIST_URL, type: 'xmlhttprequest' });
+  await new Promise(resolve => setTimeout(resolve, 25));
+
+  assert.equal(vm.runInContext('TVUInstance.queue.length', harness.context), 0);
+  assert.equal(harness.probeCalls.length, 0);
+  assert.equal(harness.session.stats && harness.session.stats[TAB_ID], undefined);
+  assert.equal(harness.session['diagnostics:' + TAB_ID].mode, 'live');
+
+  const started = Date.now();
+  const result = await harness.listeners.beforeRequest[0].fn({
+    tabId: TAB_ID,
+    url: LIVE_SEGMENT_URL,
+    type: 'media'
+  });
+  assert.ok(Date.now() - started < 50, 'live segments must not be held');
+  assert.deepEqual(JSON.parse(JSON.stringify(result || {})), {});
+});
+
+test('a muted segment with no active VOD scan returns immediately', async () => {
+  const harness = createHarness();
+  for (const fn of harness.listeners.installed) await fn({ reason: 'install' });
+
+  const started = Date.now();
+  const result = await harness.listeners.beforeRequest[0].fn({
+    tabId: TAB_ID,
+    url: PLAYLIST_URL.replace(/[^/]*$/, '0-muted.ts'),
+    type: 'media'
+  });
+  assert.ok(Date.now() - started < 50, 'no scan means no wait');
+  assert.deepEqual(JSON.parse(JSON.stringify(result || {})), {});
+});
+
+test('different player tokens do not start duplicate scans', async () => {
+  const harness = createHarness();
+  await scan(harness);
+  const before = harness.probeCalls.length;
+
+  const muted = harness.listeners.completed.find(entry =>
+    entry.filter.urls.some(url => url.includes('cloudfront.net')));
+  await muted.fn({
+    tabId: TAB_ID,
+    url: harness.playlistUrl + '?token=rotated',
+    type: 'xmlhttprequest'
+  });
+  await new Promise(resolve => setTimeout(resolve, 25));
+
+  assert.equal(harness.probeCalls.length, before);
+  assert.equal(vm.runInContext('TVUInstance.queue.length', harness.context), 0);
+});
+
+test('DVR filenames are exhausted before plain-name probes', async () => {
+  const harness = createHarness({ availableDvr: [0, 2] });
+  await scan(harness);
+
+  assert.ok(harness.probeCalls.some(call => call.url.endsWith('/0-unmuted.ts')));
+  assert.ok(!harness.probeCalls.some(call => call.url.endsWith('/0.ts')),
+    'plain fallback must not be probed when the DVR name works');
+  const stats = await harness.listeners.message[0]({ type: 'tvu:stats', tabId: TAB_ID });
+  assert.equal(stats.stats.dvrStatus, 'ok');
+  assert.equal(stats.stats.dvrNames, 2);
+});
+
+test('a token-protected DVR playlist is used as a fallback', async () => {
+  const harness = createHarness({
+    playlistToken: '?token=player',
+    dvrRequiresToken: true,
+    availableDvr: [0]
+  });
+  await scan(harness);
+
+  assert.deepEqual(await redirectFor(harness, '0-muted.ts'), {
+    redirectUrl: Core.buildUnmutedUrl(
+      harness.playlistUrl, '0-muted.ts', '720p60', '0-unmuted.ts')
+  });
+  const stats = await harness.listeners.message[0]({ type: 'tvu:stats', tabId: TAB_ID });
+  assert.equal(stats.stats.dvrStatus, 'ok');
+  assert.equal(stats.stats.dvrRequests, 2);
+});
+
+test('a delayed DVR playlist still restores exact segments', async () => {
+  const harness = createHarness({ availableDvr: [0, 2], dvrDelay: 150 });
+  await startScan(harness);
+
+  let settled = false;
+  const request = harness.listeners.beforeRequest[0].fn({
+    tabId: TAB_ID,
+    url: harness.playlistUrl.replace(/[^/]*$/, '0-muted.ts'),
+    type: 'media'
+  }).then(response => {
+    settled = true;
+    return JSON.parse(JSON.stringify(response || {}));
+  });
+
+  await new Promise(resolve => setTimeout(resolve, 25));
+  assert.equal(settled, false, 'the VOD request should wait for the slow DVR read');
+  await waitFor(() => harness.session.stats && harness.session.stats[TAB_ID]);
+
+  assert.deepEqual(await request, {
+    redirectUrl: Core.buildUnmutedUrl(
+      harness.playlistUrl, '0-muted.ts', '720p60', '0-unmuted.ts')
+  });
+  const stats = await harness.listeners.message[0]({ type: 'tvu:stats', tabId: TAB_ID });
+  assert.equal(stats.stats.dvrRestored, 2);
+  assert.ok(stats.stats.waitedSegments >= 1);
+});
+
+test('navigating away from a VOD clears its VOD state', async () => {
+  const harness = createHarness();
+  await scan(harness);
+  assert.notDeepEqual(await redirectFor(harness, '0-muted.ts'), {});
+
+  assert.equal(harness.listeners.updated.length, 1);
+  for (const fn of harness.listeners.updated) {
+    await fn(TAB_ID, { url: 'https://www.twitch.tv/live' });
+  }
+
+  assert.deepEqual(await redirectFor(harness, '0-muted.ts'), {});
+  const answer = await harness.listeners.message[0]({
+    type: 'tvu:stats', tabId: TAB_ID
+  });
+  assert.equal(answer.stats, null);
+  assert.equal(answer.diagnostics.mode, 'live');
+  assert.equal(vm.runInContext('TVUInstance.activeScans.size', harness.context), 0);
 });

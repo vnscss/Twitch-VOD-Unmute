@@ -92,6 +92,7 @@
     },
     tabs: {
       onRemoved: chrome.tabs.onRemoved,
+      onUpdated: chrome.tabs.onUpdated,
       query: promisify(chrome.tabs.query, chrome.tabs)
     },
     declarativeNetRequest: chrome.declarativeNetRequest

@@ -14,6 +14,19 @@ test('isMutedPlaylistUrl matches only muted media playlists', () => {
   assert.equal(Core.isMutedPlaylistUrl('not a url'), false);
 });
 
+test('VOD gates distinguish CDN VOD paths, VOD pages and live paths', () => {
+  assert.equal(Core.isVodUrl(PLAYLIST_URL), true);
+  assert.equal(Core.isVodUrl('https://live.cloudfront.net/live/chan/index-muted-A1.m3u8'), false);
+  assert.equal(Core.isVodMutedPlaylistUrl(PLAYLIST_URL), true);
+  assert.equal(
+    Core.isVodMutedPlaylistUrl('https://live.cloudfront.net/live/chan/index-muted-A1.m3u8'),
+    false);
+  assert.equal(Core.isVodPageUrl('https://www.twitch.tv/videos/2936135145'), true);
+  assert.equal(Core.isVodPageUrl('https://www.twitch.tv/alanzoka/video/2936135145'), true);
+  assert.equal(Core.isVodPageUrl('https://www.twitch.tv/alanzoka'), false);
+  assert.equal(Core.playlistKey(PLAYLIST_URL + '?token=one'), Core.playlistKey(PLAYLIST_URL + '?token=two'));
+});
+
 test('parseMasterPlaylist extracts qualities and base codecs', () => {
   const text = [
     '#EXTM3U',
@@ -72,6 +85,10 @@ test('dvrPlaylistUrl derives the unmuted sibling playlist', () => {
   assert.equal(
     Core.dvrPlaylistUrl(PLAYLIST_URL + '?token=x'),
     'https://vod123.cloudfront.net/vod/12345/720p60/index-dvr.m3u8'
+  );
+  assert.equal(
+    Core.dvrPlaylistUrl(PLAYLIST_URL + '?token=x', true),
+    'https://vod123.cloudfront.net/vod/12345/720p60/index-dvr.m3u8?token=x'
   );
 });
 

@@ -21,8 +21,17 @@
   const PROBE_CONCURRENCY = 12;
   const PROBE_CACHE_LIMIT = 2000;
   const SEEN_TTL_MS = 10 * 1000;
-  // Long enough to cover one full probe attempt chain plus queueing delay.
-  const PENDING_TIMEOUT_MS = 15000;
+  const QUALITY_TTL_MS = 10 * 60 * 1000;
+  // A live stream must never enter this path, so a long wait is only ever
+  // applied to an active VOD scan. It covers one full probe chain plus queueing.
+  const PENDING_TIMEOUT_MS = 30000;
+  // Hard ceiling for a single scan. Cancelling releases every waiting player
+  // request instead of letting a stalled CDN hold segments indefinitely.
+  const SCAN_TIMEOUT_MS = 60000;
+  // Two name shapes across the seven possible qualities. These are safety
+  // ceilings, not the normal path: exact DVR names usually need one probe.
+  const MAX_PROBES_PER_SEGMENT = 14;
+  const MAX_PROBES_PER_SCAN = 3000;
   const CHECKED_SEGMENT_LIMIT = 2000;
 
   function createBackground(options) {
@@ -55,18 +64,54 @@
     const seenMutedPlaylists = new Map();
     const pendingBySegment = new Map();
     const checkedSegments = new Set();
+    // A scan is registered as soon as a VOD playlist is observed, before any
+    // asynchronous read starts. The blocking listener uses this to distinguish
+    // a VOD that is being repaired from a live stream that must be untouched.
+    const activeScans = new Map();
+    const probeKeysByTab = new Map();
+    let nextScanId = 1;
 
     /* ---------------------------------------------------------------- */
     /* Small helpers                                                     */
     /* ---------------------------------------------------------------- */
 
-    function isMutedSegmentUrl(url) {
-      let pathname;
-      try {
-        pathname = new URL(url).pathname;
-      } catch (_) {
-        pathname = String(url).split('?')[0].split('#')[0];
+    class ScanCancelledError extends Error {
+      constructor() {
+        super('scan cancelled');
+        this.name = 'ScanCancelledError';
       }
+    }
+
+    function pathnameOf(url) {
+      try {
+        return new URL(url).pathname;
+      } catch (_) {
+        return String(url).split('?')[0].split('#')[0];
+      }
+    }
+
+    function pathPrefix(url) {
+      return pathnameOf(url).replace(/[^/]*$/, '');
+    }
+
+    function assertActive(signal) {
+      if (signal && signal.aborted) throw new ScanCancelledError();
+    }
+
+    function isCancellation(error) {
+      return Boolean(error) && error.name === 'ScanCancelledError';
+    }
+
+    function playlistIdentity(url) {
+      return Core.playlistKey ? Core.playlistKey(url) : pathnameOf(url);
+    }
+
+    function scanKey(tabId, url) {
+      return tabId + '|' + playlistIdentity(url);
+    }
+
+    function isMutedSegmentUrl(url) {
+      const pathname = pathnameOf(url);
       // Only muted segments can need a redirect. Waiting on ordinary segments
       // would add latency to every request and can trigger Twitch's #2000 error.
       return /(?:^|\/)\d+-muted\.(?:ts|mp4)$/i.test(pathname);
@@ -138,22 +183,84 @@
 
     // If a scan fails or is cancelled, do not leave player requests hanging.
     function releasePlaylistSegments(playlistUrl) {
-      let prefix;
-      try {
-        prefix = new URL(playlistUrl).pathname.replace(/[^/]*$/, '');
-      } catch (_) {
-        prefix = String(playlistUrl).split('?')[0].replace(/[^/]*$/, '');
-      }
+      const prefix = pathPrefix(playlistUrl);
       for (const url of Array.from(pendingBySegment.keys())) {
-        let pathname;
-        try {
-          pathname = new URL(url).pathname;
-        } catch (_) {
-          pathname = String(url).split('?')[0];
-        }
-        if (pathname.startsWith(prefix) && isMutedSegmentUrl(url)) {
+        if (pathnameOf(url).startsWith(prefix) && isMutedSegmentUrl(url)) {
           markSegmentChecked(url);
         }
+      }
+    }
+
+    function activeScanFor(tabId, url) {
+      const pathname = pathnameOf(url);
+      for (const token of activeScans.values()) {
+        if (token.tabId === tabId && pathname.startsWith(token.prefix)) return token;
+      }
+      return null;
+    }
+
+    function activeScanCount(tabId) {
+      let count = 0;
+      for (const token of activeScans.values()) {
+        if (token.tabId === tabId) count++;
+      }
+      return count;
+    }
+
+    function beginScan(tabId, url) {
+      const key = scanKey(tabId, url);
+      if (activeScans.has(key)) return null;
+
+      const token = {
+        id: nextScanId++,
+        key,
+        tabId,
+        url,
+        prefix: pathPrefix(url),
+        controller: new AbortController(),
+        timer: null,
+        probeKeys: new Set(),
+        diagnostics: {
+          dvrRequests: 0,
+          dvrStatus: 'not_requested',
+          dvrNames: 0,
+          failedProbes: 0,
+          requests: 0,
+          waitedSegments: 0
+        }
+      };
+      token.timer = setTimeout(() => {
+        console.warn('[tvu] scan timed out for tab', tabId);
+        token.controller.abort();
+        releasePlaylistSegments(url);
+      }, SCAN_TIMEOUT_MS);
+      activeScans.set(key, token);
+      return token;
+    }
+
+    function endScan(token) {
+      if (!token) return;
+      clearTimeout(token.timer);
+      if (activeScans.get(token.key) === token) activeScans.delete(token.key);
+      releasePlaylistSegments(token.url);
+    }
+
+    function cancelTabScans(tabId) {
+      for (const token of Array.from(activeScans.values())) {
+        if (token.tabId !== tabId) continue;
+        token.controller.abort();
+        if (activeScans.get(token.key) === token) activeScans.delete(token.key);
+        clearTimeout(token.timer);
+        releasePlaylistSegments(token.url);
+      }
+    }
+
+    function cancelAllScans() {
+      for (const token of Array.from(activeScans.values())) {
+        token.controller.abort();
+        if (activeScans.get(token.key) === token) activeScans.delete(token.key);
+        clearTimeout(token.timer);
+        releasePlaylistSegments(token.url);
       }
     }
 
@@ -177,6 +284,16 @@
       } catch (error) {
         console.warn('[tvu] session write failed', error);
       }
+    }
+
+    async function recordDiagnostics(tabId, patch) {
+      const key = 'diagnostics:' + tabId;
+      const current = (await sessionGet(key, null)) || {};
+      await sessionSet(key, Object.assign({}, current, patch, {
+        tabId,
+        activeScan: activeScanCount(tabId) > 0,
+        at: Date.now()
+      }));
     }
 
     async function getRedirects() {
@@ -222,12 +339,19 @@
     /* ---------------------------------------------------------------- */
 
     async function pageFetch(url) {
+      // Playlist/DVR reads also need a ceiling: a stalled CDN request must not
+      // keep the scan (and therefore VOD segment requests) alive forever.
+      // Keep this literal in sync with PLAYLIST_TIMEOUT_MS if it is configurable.
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), 8000);
       try {
-        const response = await fetch(url);
+        const response = await fetch(url, { signal: controller.signal });
         const text = await response.text();
         return { ok: response.ok, status: response.status, text };
       } catch (error) {
         return { ok: false, status: 0, text: '', error: String(error && error.message || error) };
+      } finally {
+        clearTimeout(timer);
       }
     }
 
@@ -384,9 +508,27 @@
       internalUrls.add(url);
       try {
         const page = await inject(tabId, pageFetch, [url]);
-        return page && page.ok ? page.text : null;
+        return page || null;
       } finally {
         internalUrls.delete(url);
+      }
+    }
+
+    async function fetchPlaylist(tabId, url, signal) {
+      assertActive(signal);
+      const page = await readPage(tabId, url);
+      if (page && page.text) return page;
+      assertActive(signal);
+
+      // Fallback for cases where injection is unavailable (e.g. tab navigating).
+      try {
+        const response = await fetch(url);
+        if (response.ok) {
+          return { ok: true, status: response.status, text: await response.text() };
+        }
+        return { ok: false, status: response.status, text: '' };
+      } catch (error) {
+        return { ok: false, status: 0, text: '', error: String(error && error.message || error) };
       }
     }
 
@@ -405,9 +547,13 @@
           const target = redirects[key];
           if (target) return { redirectUrl: target };
 
-          // The player requests muted segments immediately after the playlist
-          // arrives. Wait only for this segment, never for the whole playlist scan.
+          // Only a VOD that is actively being scanned may hold a request. Live
+          // playlists can also contain `N-muted.ts` names; for those there is no
+          // active scan and the request must pass through immediately.
           if (isMutedSegmentUrl(details.url)) {
+            const scan = activeScanFor(details.tabId, details.url);
+            if (!scan || scan.controller.signal.aborted) return {};
+            scan.diagnostics.waitedSegments++;
             await waitForSegment(key);
             const updated = await getRedirects();
             const newTarget = updated[key];
@@ -434,13 +580,15 @@
     api.webRequest.onCompleted.addListener(
       async (details) => {
         if (details.tabId < 0) return;
-        if (isRecent(seenMasterPlaylists, details.url)) return;
-        noteSeen(seenMasterPlaylists, details.url);
+        if (!Core.isVodUrl(details.url)) return;
+        const identity = scanKey(details.tabId, details.url);
+        if (isRecent(seenMasterPlaylists, identity)) return;
+        noteSeen(seenMasterPlaylists, identity);
 
-        const text = await readPage(details.tabId, details.url);
-        if (!text) return;
+        const page = await readPage(details.tabId, details.url);
+        if (!page || !page.text) return;
 
-        const parsed = Core.parseMasterPlaylist(text);
+        const parsed = Core.parseMasterPlaylist(page.text);
         if (!parsed.qualities.length) return;
 
         await sessionSet('quality:' + details.tabId, {
@@ -459,10 +607,28 @@
       (details) => {
         if (details.tabId < 0) return;
         if (!Core.isMutedPlaylistUrl(details.url)) return;
-        if (isRecent(seenMutedPlaylists, details.url)) return;
-        noteSeen(seenMutedPlaylists, details.url);
 
-        queue.push({ tabId: details.tabId, url: details.url });
+        // Lives can use the same `index-muted-*.m3u8` filename. Without the
+        // `/vod/<id>/` gate the shared core would probe and, on Firefox, hold
+        // live segments. Diagnostics let the popup confirm that it was ignored.
+        if (!Core.isVodMutedPlaylistUrl(details.url)) {
+          recordDiagnostics(details.tabId, {
+            mode: 'live',
+            reason: 'playlist outside /vod/',
+            url: details.url
+          });
+          return;
+        }
+
+        // Tokens change between player requests. Dedupe on origin + path so one
+        // VOD/quality is scanned once instead of queueing duplicate full scans.
+        const identity = scanKey(details.tabId, details.url);
+        if (isRecent(seenMutedPlaylists, identity)) return;
+        noteSeen(seenMutedPlaylists, identity);
+
+        const token = beginScan(details.tabId, details.url);
+        if (!token) return;
+        queue.push({ tabId: details.tabId, url: details.url, token });
         if (!processing) processQueue();
       },
       {
@@ -480,21 +646,10 @@
     /* Playlist processing                                               */
     /* ---------------------------------------------------------------- */
 
-    async function fetchPlaylist(tabId, url) {
-      const text = await readPage(tabId, url);
-      if (text) return text;
+    async function probe(tabId, url, token) {
+      const signal = token.controller.signal;
+      assertActive(signal);
 
-      // Fallback for cases where injection is unavailable (e.g. tab navigating).
-      try {
-        const response = await fetch(url);
-        if (response.ok) return await response.text();
-      } catch (_) {
-        /* nothing to do */
-      }
-      return null;
-    }
-
-    async function probe(tabId, url) {
       const cache = await sessionGet('probes', {});
       const hit = cache[url];
       if (hit && Date.now() - hit.at < PROBE_TTL_MS) return hit.result;
@@ -502,12 +657,20 @@
       delete cache[url];
 
       probeUrls.add(url);
+      token.probeKeys.add(url);
+      let tabProbeKeys = probeKeysByTab.get(tabId);
+      if (!tabProbeKeys) {
+        tabProbeKeys = new Set();
+        probeKeysByTab.set(tabId, tabProbeKeys);
+      }
+      tabProbeKeys.add(url);
       let result;
       try {
         result = (await inject(tabId, pageProbe, [url])) || { errors: PROBE_ATTEMPTS };
       } finally {
         probeUrls.delete(url);
       }
+      assertActive(signal);
 
       // Only remember positive results. A transient network error should be
       // retried on the next scan instead of being cached as "purged".
@@ -529,36 +692,79 @@
     }
 
     async function processPlaylist(item) {
-      const { tabId, url } = item;
+      const { tabId, url, token } = item;
+      const signal = token.controller.signal;
+      const diag = token.diagnostics;
+      const startedAt = Date.now();
+
+      await recordDiagnostics(tabId, {
+        mode: 'vod',
+        reason: 'scanning VOD playlist',
+        playlist: url,
+        dvrStatus: 'pending',
+        dvrRequests: 0,
+        dvrNames: 0,
+        requests: 0,
+        failedProbes: 0,
+        waitedSegments: 0
+      });
+
       const settings = await getSettings();
+      assertActive(signal);
       if (!settings.enabled) return;
 
-      const text = await fetchPlaylist(tabId, url);
-      if (!text) return;
+      const page = await fetchPlaylist(tabId, url, signal);
+      assertActive(signal);
+      if (!page || !page.text) return;
 
-      const parsed = Core.parseMutedPlaylist(text);
+      const parsed = Core.parseMutedPlaylist(page.text);
       if (!parsed.segments.length) return;
 
       // Twitch's unmuted sibling playlist lists the exact filenames that are still
-      // available (for example "12-unmuted.mp4"). Prefer those names over guessing
-      // that the original is simply "12.mp4".
-      const dvrUrl = Core.dvrPlaylistUrl(url);
-      const dvrText = await fetchPlaylist(tabId, dvrUrl);
-      const unmutedNames = dvrText ? Core.parseUnmutedPlaylist(dvrText) : {};
+      // available (for example "12-unmuted.mp4"). Try the tokenless URL first,
+      // then the player's token URL, so a CDN that requires the token is covered.
+      const unmutedNames = {};
+      const dvrUrls = [Core.dvrPlaylistUrl(url)];
+      const dvrWithToken = Core.dvrPlaylistUrl(url, true);
+      if (dvrWithToken !== dvrUrls[0]) dvrUrls.push(dvrWithToken);
+      const triedDvr = new Set();
+      let dvrHasNames = false;
+      let lastDvrStatus = 'failed';
 
-      let currentQuality = '';
-      try {
-        const parts = new URL(url).pathname.split('/');
-        currentQuality = parts[parts.length - 2] || '';
-      } catch (_) {
-        /* keep empty */
+      for (const dvrUrl of dvrUrls) {
+        assertActive(signal);
+        if (triedDvr.has(dvrUrl)) continue;
+        triedDvr.add(dvrUrl);
+        diag.dvrRequests++;
+
+        const fetched = await fetchPlaylist(tabId, dvrUrl, signal);
+        assertActive(signal);
+        if (fetched && fetched.text) {
+          const names = Core.parseUnmutedPlaylist(fetched.text);
+          const count = Object.keys(names).length;
+          if (count) {
+            Object.assign(unmutedNames, names);
+            diag.dvrNames += count;
+            dvrHasNames = true;
+            lastDvrStatus = 'ok';
+          } else {
+            lastDvrStatus = 'empty';
+          }
+        } else {
+          lastDvrStatus = String((fetched && fetched.status) || 'failed');
+        }
       }
+      diag.dvrStatus = dvrHasNames ? 'ok' : lastDvrStatus;
+
+      const currentQuality = pathnameOf(url).split('/').filter(Boolean).slice(-2)[0] || '';
 
       const qualityData = await sessionGet('quality:' + tabId, null);
-      const qualities = qualityData && qualityData.qualities && qualityData.qualities.length
+      const qualityFresh = qualityData && qualityData.at &&
+        Date.now() - qualityData.at < QUALITY_TTL_MS;
+      const qualities = qualityFresh && qualityData.qualities && qualityData.qualities.length
         ? qualityData.qualities
         : Core.DEFAULT_QUALITIES;
-      const codecMap = qualityData && qualityData.codecMap ? qualityData.codecMap : {};
+      const codecMap = qualityFresh && qualityData.codecMap ? qualityData.codecMap : {};
       const candidates = Core.qualitiesToTry(qualities, codecMap, currentQuality, settings.quality);
 
       const redirects = await getRedirects();
@@ -567,34 +773,61 @@
       let restored = 0;
       let lowerQuality = 0;
       let dvrRestored = 0;
-      let failedProbes = 0;
-      let requests = 0;
       let cursor = 0;
+      let scanProbes = 0;
+
+      function noteOutcome(outcome) {
+        const errors = outcome.errors || 0;
+        diag.failedProbes += errors;
+        diag.requests += errors + 1;
+      }
 
       async function worker() {
         while (cursor < parsed.segments.length) {
+          assertActive(signal);
           const segment = parsed.segments[cursor++];
           let found = null;
-
+          let segmentProbes = 0;
           const exactName = unmutedNames[String(segment.number)];
-          const names = Array.from(new Set(exactName
-            ? [exactName, ...Core.unmutedNameCandidates(segment.name)]
-            : Core.unmutedNameCandidates(segment.name)));
 
-          for (const quality of candidates) {
-            for (const name of names) {
-              const target = Core.buildUnmutedUrl(url, segment.name, quality, name);
-              const outcome = await probe(tabId, target);
-              const errors = outcome.errors || 0;
-              failedProbes += errors;
-              requests += errors + 1;
+          async function tryName(quality, name) {
+            if (segmentProbes >= MAX_PROBES_PER_SEGMENT ||
+                scanProbes >= MAX_PROBES_PER_SCAN) return null;
+            const target = Core.buildUnmutedUrl(url, segment.name, quality, name);
+            const outcome = await probe(tabId, target, token);
+            segmentProbes++;
+            scanProbes++;
+            noteOutcome(outcome);
+            return Core.isAvailable(outcome.status) ? { quality, target } : null;
+          }
 
-              if (Core.isAvailable(outcome.status)) {
-                found = { quality, target, fromDvr: Boolean(exactName) && name === exactName };
+          // Exact names from index-dvr are far more reliable than guessing.
+          // Exhaust them across qualities before sending any plain-name probes.
+          if (exactName) {
+            for (const quality of candidates) {
+              assertActive(signal);
+              const hit = await tryName(quality, exactName);
+              if (hit) {
+                found = Object.assign({ fromDvr: true }, hit);
                 break;
               }
             }
-            if (found) break;
+          }
+
+          if (!found) {
+            const fallbackNames = Core.unmutedNameCandidates(segment.name)
+              .filter(name => name !== exactName);
+            for (const quality of candidates) {
+              for (const name of fallbackNames) {
+                assertActive(signal);
+                const hit = await tryName(quality, name);
+                if (hit) {
+                  found = Object.assign({ fromDvr: false }, hit);
+                  break;
+                }
+              }
+              if (found) break;
+            }
           }
 
           const mutedUrl = url.replace(/[^/]*$/, segment.name);
@@ -602,11 +835,15 @@
           touchedKeys.push(key);
 
           if (found) {
+            assertActive(signal);
             redirects[key] = found.target;
             restored++;
             if (found.quality !== currentQuality) lowerQuality++;
             if (found.fromDvr) dvrRestored++;
             await emitRedirect(key, found.target, tabId);
+            // A navigation/timeout that races with DNR rule creation must not
+            // leave a rule behind after the tab has been cleaned up.
+            if (signal.aborted) await removeTabRules(tabId);
           }
           results.push({ number: segment.number, quality: found ? found.quality : null });
 
@@ -619,27 +856,46 @@
 
       const workers = Math.min(PROBE_CONCURRENCY, parsed.segments.length);
       await Promise.all(Array.from({ length: workers }, worker));
+      assertActive(signal);
 
       await putRedirects(redirects);
       await rememberTabUrls(tabId, touchedKeys);
 
       const stats = {
         tabId,
+        mode: 'vod',
         quality: currentQuality,
         total: parsed.segments.length,
         restored,
         lowerQuality,
         dvrRestored,
-        failedProbes,
-        requests,
+        dvrStatus: diag.dvrStatus,
+        dvrNames: diag.dvrNames,
+        dvrRequests: diag.dvrRequests,
+        failedProbes: diag.failedProbes,
+        requests: diag.requests,
+        waitedSegments: diag.waitedSegments,
+        durationMs: Date.now() - startedAt,
+        activeScan: false,
         at: Date.now()
       };
       const allStats = await sessionGet('stats', {});
       allStats[tabId] = stats;
       await sessionSet('stats', allStats);
+      await recordDiagnostics(tabId, {
+        mode: 'vod',
+        reason: 'scan finished',
+        dvrStatus: diag.dvrStatus,
+        dvrNames: diag.dvrNames,
+        dvrRequests: diag.dvrRequests,
+        requests: diag.requests,
+        waitedSegments: diag.waitedSegments,
+        durationMs: stats.durationMs
+      });
       console.log('[tvu]', tabId, restored + '/' + parsed.segments.length + ' segments restored');
 
       if (settings.seekbar && results.length) {
+        assertActive(signal);
         const bands = Core.buildSeekbarBands(results, parsed.lastNumber);
         await inject(tabId, paintSeekbar, [bands, {
           unmuted: Core.withOpacity(settings.unmutedColour, settings.opacity),
@@ -657,9 +913,11 @@
         try {
           await processPlaylist(item);
         } catch (error) {
-          console.error('[tvu] playlist processing failed', error);
+          if (!isCancellation(error)) {
+            console.error('[tvu] playlist processing failed', error);
+          }
         } finally {
-          releasePlaylistSegments(item.url);
+          endScan(item.token);
         }
       }
       processing = false;
@@ -669,7 +927,9 @@
     /* Cleanup and popup messaging                                       */
     /* ---------------------------------------------------------------- */
 
-    api.tabs.onRemoved.addListener(async (tabId) => {
+    async function clearTabState(tabId) {
+      cancelTabScans(tabId);
+
       const redirects = await getRedirects();
       const tabUrls = await sessionGet('tabUrls', {});
       for (const url of tabUrls[tabId] || []) delete redirects[url];
@@ -681,11 +941,55 @@
       const stats = await sessionGet('stats', {});
       delete stats[tabId];
       await sessionSet('stats', stats);
+      await sessionSet('diagnostics:' + tabId, null);
+      await sessionSet('quality:' + tabId, null);
+
+      const probes = await sessionGet('probes', {});
+      for (const key of tokenProbeKeys(tabId)) delete probes[key];
+      probeKeysByTab.delete(tabId);
+      await sessionSet('probes', probes);
+
       await removeTabRules(tabId);
+    }
+
+    function tokenProbeKeys(tabId) {
+      const keys = new Set();
+      for (const token of activeScans.values()) {
+        if (token.tabId === tabId) {
+          for (const key of token.probeKeys) keys.add(key);
+        }
+      }
+      // Scans were cancelled above, also include keys recorded before the tab
+      // changed so its probes do not linger in the session cache.
+      for (const key of probeKeysByTab.get(tabId) || []) keys.add(key);
+      return keys;
+    }
+
+    api.tabs.onRemoved.addListener(async (tabId) => {
+      await clearTabState(tabId);
     });
+
+    // Leaving a VOD for a live channel must clear VOD redirects and stop any
+    // in-flight scan. Only changeInfo.url is used: status-only updates do not
+    // represent navigation and must not reset a scan that is already running.
+    if (api.tabs.onUpdated && api.tabs.onUpdated.addListener) {
+      api.tabs.onUpdated.addListener(async (tabId, changeInfo) => {
+        const url = changeInfo && changeInfo.url;
+        if (!url) return;
+        if (Core.isVodUrl(url) || Core.isVodPageUrl(url)) return;
+
+        await clearTabState(tabId);
+        await recordDiagnostics(tabId, {
+          mode: 'live',
+          reason: 'navigated away from VOD',
+          url
+        });
+      });
+    }
 
     api.storage.onChanged.addListener(async (changes, area) => {
       if (area === 'sync' && changes.enabled && changes.enabled.newValue === false) {
+        cancelAllScans();
         await putRedirects({});
         await sessionSet('stats', {});
         await clearAllRules();
@@ -697,9 +1001,13 @@
 
       return (async () => {
         if (message.clear) {
+          cancelAllScans();
           await putRedirects({});
           await sessionSet('stats', {});
           await sessionSet('tabUrls', {});
+          if (message.tabId != null) {
+            await sessionSet('diagnostics:' + message.tabId, null);
+          }
           await clearAllRules();
           return { stats: null };
         }
@@ -710,12 +1018,31 @@
           const tabs = await api.tabs.query({ active: true, currentWindow: true });
           tabId = tabs[0] && tabs[0].id;
         }
-        return { stats: all[tabId] || null };
+        const diagnostics = tabId == null
+          ? null
+          : await sessionGet('diagnostics:' + tabId, null);
+        const tabUrls = await sessionGet('tabUrls', {});
+        return {
+          stats: all[tabId] || null,
+          diagnostics: diagnostics ? Object.assign({}, diagnostics, {
+            tabId,
+            activeScan: activeScanCount(tabId),
+            redirects: (tabUrls[tabId] || []).length
+          }) : null
+        };
       })();
     });
 
     // Exposed for tests and diagnostics; no page script can reach this object.
-    return { segmentKey, isMutedSegmentUrl, markSegmentChecked, queue, seenMutedPlaylists };
+    return {
+      segmentKey,
+      isMutedSegmentUrl,
+      markSegmentChecked,
+      queue,
+      seenMutedPlaylists,
+      activeScans,
+      cancelTabScans
+    };
   }
 
   return { createBackground };

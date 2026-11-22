@@ -4,7 +4,8 @@
 Builds a temporary copy of the extension with localhost added to its host
 permissions, serves a synthetic muted HLS playlist, launches headless Firefox
 through web-ext, and verifies that the extension redirected the player's
-muted segment requests to the available originals.
+muted VOD segment requests to the available originals while ignoring a
+live-style muted playlist.
 
 Requires Node + web-ext on PATH (see README for the portable setup).
 """
@@ -46,11 +47,15 @@ PAGE = '''<!doctype html>
   // Give web-ext a moment to finish loading the background script.
   await new Promise(resolve => setTimeout(resolve, 1200));
   const playlist = location.origin + '/vod/12345/720p60/index-muted-ABC.m3u8';
+  const livePlaylist = location.origin + '/live/chan/index-muted-LIVE.m3u8';
   try {
     await fetch(playlist, { cache: 'no-store' });
     for (const name of ['0-muted.ts', '1-muted.ts', '2-muted.ts']) {
       await fetch(playlist.replace(/[^/]*$/, name), { cache: 'no-store' });
     }
+    // A live playlist with the same filename pattern must be ignored.
+    await fetch(livePlaylist, { cache: 'no-store' });
+    await fetch(livePlaylist.replace(/[^/]*$/, '12-muted.ts'), { cache: 'no-store' });
     document.getElementById('result').textContent = 'done';
   } catch (error) {
     document.getElementById('result').textContent = 'error: ' + error;
@@ -95,12 +100,17 @@ class Handler(BaseHTTPRequestHandler):
             body = DVR_PLAYLIST.encode()
             content_type = 'application/vnd.apple.mpegurl'
             status = 200
+        elif self.path == '/live/chan/index-muted-LIVE.m3u8':
+            body = '#EXTM3U\n12-muted.ts\n'.encode()
+            content_type = 'application/vnd.apple.mpegurl'
+            status = 200
         elif self.path.endswith('.ts'):
             name = self.path.rsplit('/', 1)[-1]
             # 0 and 2 still have exact unmuted originals; 1 was purged.
+            # 12-muted.ts is a live segment that must pass through untouched.
             available = name in (
                 '0-muted.ts', '2-muted.ts', '0-unmuted.ts', '2-unmuted.ts',
-                '0.ts', '2.ts')
+                '0.ts', '2.ts', '12-muted.ts')
             body = b'tvufixture' if available else b''
             content_type = 'video/mp2t'
             status = 200 if available else 404
@@ -193,6 +203,7 @@ def main() -> int:
 
         playlist_path = '/vod/12345/720p60/index-muted-ABC.m3u8'
         dvr_path = '/vod/12345/720p60/index-dvr.m3u8'
+        live_playlist_path = '/live/chan/index-muted-LIVE.m3u8'
         # Probes carry Range: bytes=0-1. Player requests do not. The exact
         # unmuted filenames come from index-dvr.m3u8 and must be used for the
         # redirects; the purged middle segment stays muted.
@@ -205,6 +216,13 @@ def main() -> int:
             ('/vod/12345/720p60/0-unmuted.ts', None),
             ('/vod/12345/720p60/1-muted.ts', None),
             ('/vod/12345/720p60/2-unmuted.ts', None),
+            (live_playlist_path, None),
+            ('/live/chan/12-muted.ts', None),
+        ]
+        forbidden = [
+            ('/live/chan/index-dvr.m3u8', None),
+            ('/live/chan/12-unmuted.ts', 'bytes=0-1'),
+            ('/live/chan/12.ts', 'bytes=0-1'),
         ]
         deadline = time.time() + 45
         seen = []
@@ -233,6 +251,9 @@ def main() -> int:
         print(' ', path, 'Range=' + str(range_header))
 
     missing = [item for item in expected if item not in seen]
+    leaked = [item for item in forbidden if item in seen]
+    if leaked:
+        missing.append('ERROR: live traffic was touched: ' + repr(leaked))
     if ('/vod/12345/720p60/1.ts', None) in seen:
         missing.append('ERROR: purged segment 1 was incorrectly redirected')
     for name in ('0-muted.ts', '2-muted.ts'):
@@ -243,7 +264,8 @@ def main() -> int:
         print(output[-4000:], file=sys.stderr)
         return 1
 
-    print('SMOKE TEST PASSED: Firefox restored the available segments.')
+    print('SMOKE TEST PASSED: Firefox restored the available VOD segments '
+          'and ignored the live playlist.')
     return 0
 
 

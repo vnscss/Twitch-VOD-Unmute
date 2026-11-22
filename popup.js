@@ -39,20 +39,44 @@ function normaliseHex(value, fallback) {
 
 async function refreshStats() {
   const element = $('stats');
+  const detail = $('diagnostics');
   try {
     const response = await TVUApi.runtime.sendMessage({ type: 'tvu:stats' });
     if (response && response.error) throw new Error(response.error);
     const stats = response && response.stats;
+    const info = response && response.diagnostics;
+
     if (!stats) {
-      element.textContent = 'No scan yet. Open a muted VOD and wait a few seconds.';
+      if (info && info.mode === 'live') {
+        element.textContent = 'Live stream detected — ignored.';
+        detail.textContent = 'No media requests were delayed, probed, or redirected.';
+      } else if (info && info.activeScan) {
+        element.textContent = 'Scanning VOD…';
+        detail.textContent = 'Segment requests are waiting only for this VOD.';
+      } else {
+        element.textContent = 'No scan yet. Open a muted VOD and wait a few seconds.';
+        detail.textContent = '';
+      }
       return;
     }
+
     const extra = stats.lowerQuality ? ', ' + stats.lowerQuality + ' from a lower quality' : '';
     const dvr = stats.dvrRestored ? ', ' + stats.dvrRestored + ' via index-dvr' : '';
     element.textContent = stats.restored + '/' + stats.total + ' segments recovered' + extra + dvr +
       ' (' + (stats.quality || 'unknown quality') + ').';
+
+    const parts = [];
+    if (stats.dvrStatus) {
+      parts.push('DVR: ' + stats.dvrStatus +
+        (stats.dvrNames ? ' (' + stats.dvrNames + ' names)' : ''));
+    }
+    if (stats.requests) parts.push(stats.requests + ' probes');
+    if (stats.waitedSegments) parts.push(stats.waitedSegments + ' held requests');
+    if (stats.durationMs) parts.push('scan ' + Math.round(stats.durationMs / 100) / 10 + 's');
+    detail.textContent = parts.length ? parts.join(' · ') : (info && info.reason) || '';
   } catch (error) {
     element.textContent = 'Could not read scan results: ' + (error && error.message || error);
+    detail.textContent = '';
   }
 }
 

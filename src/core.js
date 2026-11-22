@@ -41,6 +41,50 @@
     return MUTED_PLAYLIST_RE.test(pathname.split('/').pop());
   }
 
+  /** True when a URL is inside a Twitch VOD path (`/vod/<id>/...`). */
+  function isVodUrl(url) {
+    let pathname;
+    try {
+      pathname = new URL(url).pathname;
+    } catch (_) {
+      pathname = String(url).split('?')[0].split('#')[0];
+    }
+    return /\/vod\/\d+(?:\/|$)/.test(pathname);
+  }
+
+  /**
+   * True only for muted playlists that belong to a VOD.
+   *
+   * Live HLS playlists can also be named `index-muted-*.m3u8`. The extension
+   * must never probe or delay live traffic, so the VOD path is mandatory.
+   */
+  function isVodMutedPlaylistUrl(url) {
+    return isVodUrl(url) && isMutedPlaylistUrl(url);
+  }
+
+  /** True for a top-level Twitch page that is showing a VOD. */
+  function isVodPageUrl(url) {
+    let pathname;
+    try {
+      const parsed = new URL(url);
+      if (!/(^|\.)twitch\.tv$/i.test(parsed.hostname)) return false;
+      pathname = parsed.pathname;
+    } catch (_) {
+      pathname = String(url).split('?')[0].split('#')[0];
+    }
+    return /(?:^|\/)videos\/\d+(?:\/|$)|(?:^|\/)video\/\d+(?:\/|$)/.test(pathname);
+  }
+
+  /** Stable key for a playlist, ignoring player tokens in the query string. */
+  function playlistKey(url) {
+    try {
+      const parsed = new URL(url);
+      return parsed.origin + parsed.pathname;
+    } catch (_) {
+      return String(url).split('?')[0].split('#')[0];
+    }
+  }
+
   /** Extract quality labels and their base codec from a master playlist. */
   function parseMasterPlaylist(text) {
     const qualities = [];
@@ -128,12 +172,17 @@
     ];
   }
 
-  /** Build the unmuted sibling playlist URL for a muted media playlist. */
-  function dvrPlaylistUrl(playlistUrl) {
+  /**
+   * Build the unmuted sibling playlist URL for a muted media playlist.
+   *
+   * Some CDN setups require the player's token on `index-dvr.m3u8` too, so the
+   * caller can request a copy with the original query string preserved.
+   */
+  function dvrPlaylistUrl(playlistUrl, keepQuery) {
     const url = new URL(playlistUrl);
     url.pathname = url.pathname.replace(/[^/]*$/, 'index-dvr.m3u8');
-    url.search = '';
     url.hash = '';
+    if (!keepQuery) url.search = '';
     return url.href;
   }
 
@@ -280,6 +329,10 @@
     DEFAULT_QUALITIES,
     DEFAULT_SETTINGS,
     isMutedPlaylistUrl,
+    isVodUrl,
+    isVodMutedPlaylistUrl,
+    isVodPageUrl,
+    playlistKey,
     parseMasterPlaylist,
     parseMutedPlaylist,
     unmutedName,
