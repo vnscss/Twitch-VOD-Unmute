@@ -53,6 +53,12 @@ async function refreshStats() {
       } else if (info && info.activeScan) {
         element.textContent = 'Scanning VOD…';
         detail.textContent = 'Segment requests are waiting only for this VOD.';
+      } else if (info && info.mode === 'vod') {
+        element.textContent = 'VOD page detected — waiting for media.';
+        detail.textContent = 'The VOD playlist has not been scanned yet.';
+      } else if (info && info.mode === 'unknown') {
+        element.textContent = 'No scan for this page.';
+        detail.textContent = info.reason || 'No VOD playlist observed.';
       } else {
         element.textContent = 'No scan yet. Open a muted VOD and wait a few seconds.';
         detail.textContent = '';

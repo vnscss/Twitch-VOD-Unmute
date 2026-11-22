@@ -62,17 +62,75 @@
     return isVodUrl(url) && isMutedPlaylistUrl(url);
   }
 
+  /**
+   * Extract the VOD id from a top-level Twitch page URL.
+   *
+   * Twitch uses both path-based VOD pages (`/videos/<id>`,
+   * `/<channel>/video/<id>`) and the standalone player, which keeps the id in
+   * the `video` query parameter. Both must count as VOD context; otherwise a
+   * popout player is incorrectly treated as a live stream.
+   */
+  function vodIdFromUrl(url) {
+    let pathname;
+    let videoParam = '';
+
+    try {
+      const parsed = new URL(url);
+      if (!/(^|\.)twitch\.tv$/i.test(parsed.hostname)) return null;
+      pathname = parsed.pathname;
+      videoParam = parsed.searchParams.get('video') || '';
+    } catch (_) {
+      const text = String(url);
+      pathname = text.split('?')[0].split('#')[0];
+      const match = /(?:^|[?&])video=([^&#]*)/i.exec(text);
+      videoParam = match ? match[1] : '';
+    }
+
+    const pathMatch =
+      /(?:^|\/)videos\/(\d+)(?:\/|$)|(?:^|\/)video\/(\d+)(?:\/|$)/.exec(pathname);
+    if (pathMatch) return pathMatch[1] || pathMatch[2];
+
+    try {
+      videoParam = decodeURIComponent(videoParam);
+    } catch (_) {
+      /* keep the raw value */
+    }
+    const videoMatch = /(?:vod:)?(\d+)/i.exec(videoParam);
+    return videoMatch ? videoMatch[1] : null;
+  }
+
   /** True for a top-level Twitch page that is showing a VOD. */
   function isVodPageUrl(url) {
+    return vodIdFromUrl(url) !== null;
+  }
+
+  /**
+   * True only for URLs that explicitly indicate a live stream.
+   *
+   * Navigation to an unknown or transitional Twitch URL must not be labelled
+   * "live" in the popup; it should only clear stale VOD state.
+   */
+  function isLivePageUrl(url) {
     let pathname;
+    let hasChannel = false;
+    let hasVideo = false;
+
     try {
       const parsed = new URL(url);
       if (!/(^|\.)twitch\.tv$/i.test(parsed.hostname)) return false;
       pathname = parsed.pathname;
+      hasChannel = parsed.searchParams.has('channel');
+      hasVideo = parsed.searchParams.has('video');
     } catch (_) {
-      pathname = String(url).split('?')[0].split('#')[0];
+      const text = String(url);
+      pathname = text.split('?')[0].split('#')[0];
+      hasChannel = /(?:^|[?&])channel=/i.test(text);
+      hasVideo = /(?:^|[?&])video=/i.test(text);
     }
-    return /(?:^|\/)videos\/\d+(?:\/|$)|(?:^|\/)video\/\d+(?:\/|$)/.test(pathname);
+
+    if (vodIdFromUrl(url)) return false;
+    if (hasChannel && !hasVideo) return true;
+    return /^\/live(?:[\/?]|$)/.test(pathname);
   }
 
   /** Stable key for a playlist, ignoring player tokens in the query string. */
@@ -332,6 +390,8 @@
     isVodUrl,
     isVodMutedPlaylistUrl,
     isVodPageUrl,
+    isLivePageUrl,
+    vodIdFromUrl,
     playlistKey,
     parseMasterPlaylist,
     parseMutedPlaylist,

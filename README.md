@@ -33,8 +33,11 @@ When Twitch serves a muted VOD playlist, this extension:
 
 Live streams are explicitly out of scope. A muted playlist outside a
 `/vod/<id>/` CDN path is ignored without fetching DVR data, probing segments,
-or delaying any request. Navigating away from a VOD cancels an in-flight scan,
-releases waiting requests, and removes that tab's redirects/rules.
+or delaying any request. Both `twitch.tv/videos/<id>` pages and popout player
+URLs with `?video=<id>` count as VOD context. Navigating away from a VOD
+cancels an in-flight scan, releases waiting requests, and removes that tab's
+redirects/rules. Transitional or unknown Twitch URLs are not mislabelled as
+live in the popup.
 
 Segments that Twitch has permanently purged remain muted; the extension cannot
 recreate audio that is no longer served by the CDN.

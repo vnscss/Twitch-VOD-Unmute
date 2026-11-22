@@ -23,7 +23,17 @@ test('VOD gates distinguish CDN VOD paths, VOD pages and live paths', () => {
     false);
   assert.equal(Core.isVodPageUrl('https://www.twitch.tv/videos/2936135145'), true);
   assert.equal(Core.isVodPageUrl('https://www.twitch.tv/alanzoka/video/2936135145'), true);
+  assert.equal(Core.isVodPageUrl(
+    'https://player.twitch.tv/?enableExtensions=true&muted=false&parent=twitch.tv' +
+    '&player=popout&quality=1080p60&t=0h19m58s&video=2936135145&volume=1'), true);
+  assert.equal(Core.vodIdFromUrl('https://player.twitch.tv/?video=vod%3A2936135145'),
+    '2936135145');
   assert.equal(Core.isVodPageUrl('https://www.twitch.tv/alanzoka'), false);
+  assert.equal(Core.isLivePageUrl('https://www.twitch.tv/live'), true);
+  assert.equal(Core.isLivePageUrl('https://player.twitch.tv/?channel=alanzoka'), true);
+  assert.equal(Core.isLivePageUrl(
+    'https://player.twitch.tv/?video=2936135145'), false);
+  assert.equal(Core.isLivePageUrl('https://www.twitch.tv/'), false);
   assert.equal(Core.playlistKey(PLAYLIST_URL + '?token=one'), Core.playlistKey(PLAYLIST_URL + '?token=two'));
 });
 

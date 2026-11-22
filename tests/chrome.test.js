@@ -19,6 +19,9 @@ const PLAYLIST_URL =
 const DVR_URL = 'https://vod123.cloudfront.net/vod/12345/720p60/index-dvr.m3u8';
 const LIVE_PLAYLIST_URL =
   'https://live123.cloudfront.net/live/alanzoka/index-muted-LIVE.m3u8';
+const VOD_POPOUT_URL =
+  'https://player.twitch.tv/?enableExtensions=true&muted=false&parent=twitch.tv' +
+  '&player=popout&quality=1080p60&t=0h19m58s&video=2936135145&volume=1';
 const PLAYLIST = ['#EXTM3U', '0-muted.ts', '1-muted.ts', '2-muted.ts'].join('\n');
 const DVR = ['#EXTM3U', '0-unmuted.ts', '1.ts', '2-unmuted.ts'].join('\n');
 
@@ -273,4 +276,20 @@ test('navigating from a VOD to a live channel removes its DNR rules', async () =
   assert.equal(harness.getSessionRules().length, 0);
   const stats = await statsFor(harness);
   assert.equal(stats.stats, null);
+});
+
+test('a player popout for the same VOD keeps its DNR rules', async () => {
+  const harness = createHarness();
+  await startScan(harness);
+  const before = harness.getSessionRules().length;
+  assert.ok(before > 0);
+
+  for (const fn of harness.listeners.updated) {
+    await fn(TAB_ID, { url: VOD_POPOUT_URL });
+  }
+
+  assert.equal(harness.getSessionRules().length, before);
+  const stats = await statsFor(harness);
+  assert.equal(stats.stats.restored, 2);
+  assert.equal(stats.diagnostics.mode, 'vod');
 });

@@ -69,6 +69,7 @@
     // a VOD that is being repaired from a live stream that must be untouched.
     const activeScans = new Map();
     const probeKeysByTab = new Map();
+    const pageUrlsByTab = new Map();
     let nextScanId = 1;
 
     /* ---------------------------------------------------------------- */
@@ -967,21 +968,44 @@
 
     api.tabs.onRemoved.addListener(async (tabId) => {
       await clearTabState(tabId);
+      pageUrlsByTab.delete(tabId);
     });
 
-    // Leaving a VOD for a live channel must clear VOD redirects and stop any
-    // in-flight scan. Only changeInfo.url is used: status-only updates do not
-    // represent navigation and must not reset a scan that is already running.
+    // Navigation classification is diagnostic only: it must never clear VOD
+    // state just because the URL is a player popout or a transitional Twitch
+    // URL. Only changeInfo.url is used; status-only updates are not navigation.
     if (api.tabs.onUpdated && api.tabs.onUpdated.addListener) {
       api.tabs.onUpdated.addListener(async (tabId, changeInfo) => {
         const url = changeInfo && changeInfo.url;
         if (!url) return;
-        if (Core.isVodUrl(url) || Core.isVodPageUrl(url)) return;
 
+        const previousUrl = pageUrlsByTab.get(tabId) || null;
+        const previousVodId = previousUrl ? Core.vodIdFromUrl(previousUrl) : null;
+        const vodId = Core.isVodUrl(url) ? null : Core.vodIdFromUrl(url);
+        pageUrlsByTab.set(tabId, url);
+
+        if (Core.isVodUrl(url) || vodId) {
+          // A different VOD in the same tab must not inherit old redirects.
+          if (previousVodId && previousVodId !== vodId) {
+            await clearTabState(tabId);
+          }
+          // Always overwrite a stale "live" diagnostic when a VOD is opened.
+          await recordDiagnostics(tabId, {
+            mode: 'vod',
+            reason: 'VOD page',
+            url,
+            vodId: vodId || undefined
+          });
+          return;
+        }
+
+        // Any navigation to a non-VOD URL ends the previous VOD context,
+        // whether or not a page URL was observed when the scan began.
         await clearTabState(tabId);
+        const live = Core.isLivePageUrl(url);
         await recordDiagnostics(tabId, {
-          mode: 'live',
-          reason: 'navigated away from VOD',
+          mode: live ? 'live' : 'unknown',
+          reason: live ? 'navigated to live stream' : 'navigated outside VOD',
           url
         });
       });

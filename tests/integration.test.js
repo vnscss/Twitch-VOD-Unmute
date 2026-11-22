@@ -27,6 +27,10 @@ const MASTER = [
   '#EXT-X-STREAM-INF:BANDWIDTH=200,CODECS="hvc1.1.6.L120,mp4a.40.2"',
   'https://vod123.cloudfront.net/vod/12345/360p30/index.m3u8'
 ].join('\n');
+const VOD_PAGE_URL = 'https://www.twitch.tv/videos/2936135145';
+const VOD_POPOUT_URL =
+  'https://player.twitch.tv/?enableExtensions=true&muted=false&parent=twitch.tv' +
+  '&player=popout&quality=1080p60&t=0h19m58s&video=2936135145&volume=1';
 const LIVE_PLAYLIST_URL =
   'https://live123.cloudfront.net/live/alanzoka/index-muted-LIVE.m3u8';
 const LIVE_SEGMENT_URL =
@@ -596,4 +600,73 @@ test('navigating away from a VOD clears its VOD state', async () => {
   assert.equal(answer.stats, null);
   assert.equal(answer.diagnostics.mode, 'live');
   assert.equal(vm.runInContext('TVUInstance.activeScans.size', harness.context), 0);
+});
+
+test('opening a VOD page replaces a stale live diagnostic', async () => {
+  const harness = createHarness();
+  for (const fn of harness.listeners.installed) await fn({ reason: 'install' });
+
+  const updated = harness.listeners.updated[0];
+  await updated(TAB_ID, { url: 'https://www.twitch.tv/live' });
+  let answer = await harness.listeners.message[0]({
+    type: 'tvu:stats', tabId: TAB_ID
+  });
+  assert.equal(answer.diagnostics.mode, 'live');
+
+  await updated(TAB_ID, { url: VOD_PAGE_URL });
+  answer = await harness.listeners.message[0]({
+    type: 'tvu:stats', tabId: TAB_ID
+  });
+  assert.equal(answer.stats, null);
+  assert.equal(answer.diagnostics.mode, 'vod');
+  assert.equal(answer.diagnostics.reason, 'VOD page');
+  assert.equal(answer.diagnostics.vodId, '2936135145');
+});
+
+test('a player popout for the same VOD keeps the existing scan state', async () => {
+  const harness = createHarness();
+  await scan(harness);
+
+  const updated = harness.listeners.updated[0];
+  await updated(TAB_ID, { url: VOD_PAGE_URL });
+  await updated(TAB_ID, { url: VOD_POPOUT_URL });
+
+  assert.notDeepEqual(await redirectFor(harness, '0-muted.ts'), {});
+  const answer = await harness.listeners.message[0]({
+    type: 'tvu:stats', tabId: TAB_ID
+  });
+  assert.equal(answer.stats.restored, 2);
+  assert.equal(answer.diagnostics.mode, 'vod');
+  assert.equal(answer.diagnostics.vodId, '2936135145');
+});
+
+test('an ambiguous navigation is not reported as a live stream', async () => {
+  const harness = createHarness();
+  for (const fn of harness.listeners.installed) await fn({ reason: 'install' });
+
+  const updated = harness.listeners.updated[0];
+  await updated(TAB_ID, { url: VOD_PAGE_URL });
+  await updated(TAB_ID, { url: 'https://www.twitch.tv/' });
+
+  const answer = await harness.listeners.message[0]({
+    type: 'tvu:stats', tabId: TAB_ID
+  });
+  assert.equal(answer.diagnostics.mode, 'unknown');
+  assert.equal(answer.diagnostics.reason, 'navigated outside VOD');
+});
+
+test('switching to a different VOD clears the old VOD state', async () => {
+  const harness = createHarness();
+  await scan(harness);
+
+  const updated = harness.listeners.updated[0];
+  await updated(TAB_ID, { url: VOD_PAGE_URL });
+  await updated(TAB_ID, { url: 'https://www.twitch.tv/videos/999' });
+
+  assert.deepEqual(await redirectFor(harness, '0-muted.ts'), {});
+  const answer = await harness.listeners.message[0]({
+    type: 'tvu:stats', tabId: TAB_ID
+  });
+  assert.equal(answer.stats, null);
+  assert.equal(answer.diagnostics.vodId, '999');
 });
