@@ -16,12 +16,14 @@ When Twitch serves a muted VOD playlist, this extension:
 
 1. Detects the `index-muted-*.m3u8` media playlist.
 2. Reads the playlist and finds the muted `.ts`/`.mp4` segments.
-3. Probes the corresponding unmuted segment URLs in the current quality,
-   then any codec-compatible higher qualities, then lower qualities when
-   enabled.
-4. Holds the player's segment requests until probing finishes.
-5. Redirects only the requests whose original segment is still available.
-6. Optionally colours the seekbar to show which parts were recovered.
+3. Reads the sibling `index-dvr.m3u8` playlist to learn the exact unmuted
+   filenames Twitch currently serves (for example `12-unmuted.mp4`).
+4. Probes those exact filenames first, then the legacy plain `12.mp4` name,
+   in the current quality, any codec-compatible higher qualities, and finally
+   lower qualities when enabled.
+5. Holds the player's segment requests until probing finishes.
+6. Redirects only the requests whose original segment is still available.
+7. Optionally colours the seekbar to show which parts were recovered.
 
 Segments that Twitch has permanently purged remain muted; the extension cannot
 recreate audio that is no longer served by the CDN.
@@ -85,11 +87,14 @@ same `service_worker`/DNR combination, so this port uses:
 - `webRequest.onBeforeRequest` with `blocking` to redirect segment requests.
 - `browser.scripting.executeScript` in the page's `MAIN` world to read
   playlists and probe unmuted segments with CORS-compatible requests.
-- Redirect keys ignore query strings/tokens on segment requests. Unmuted
-originals are not available for every quality, so codec-compatible higher
-qualities are checked even when the player selected a low quality. If the
-master playlist does not describe the selected quality (common for `chunked`),
-the whole ladder is tried with that quality first.
+- Redirect keys ignore query strings/tokens on segment requests. Exact
+unmuted filenames are read from `index-dvr.m3u8` before falling back to the
+legacy plain filenames. Unmuted originals are not available for every quality,
+so codec-compatible higher qualities are checked even when the player selected
+a low quality. If the master playlist does not describe the selected quality
+(common for `chunked`), the whole ladder is tried with that quality first.
+- Probes send only `Range: bytes=0-1`. Extra cache headers can make Twitch's
+CDN reject an otherwise available segment with 403.
 - `browser.storage.sync` for settings and `browser.storage.session` for
   per-session redirects, positive probe results, and statistics.
 

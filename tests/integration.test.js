@@ -17,6 +17,7 @@ const TAB_ID = 7;
 const MASTER_URL = 'https://usher.ttvnw.net/vod/12345?token=abc';
 const PLAYLIST_URL =
   'https://vod123.cloudfront.net/vod/12345/720p60/index-muted-ABC123.m3u8';
+const DVR_URL = 'https://vod123.cloudfront.net/vod/12345/720p60/index-dvr.m3u8';
 const MASTER = [
   '#EXTM3U',
   '#EXT-X-STREAM-INF:BANDWIDTH=5000,CODECS="avc1.640028,mp4a.40.2"',
@@ -56,6 +57,8 @@ function createHarness({
   allowLowerQuality = false,
   available720 = [0, 2],
   available480 = [1],
+  availableDvr = [],
+  dvrPlaylist = false,
   injectDelay = 0,
   injectDelayFor = null
 } = {}) {
@@ -84,16 +87,36 @@ function createHarness({
   responses.set(MASTER_URL, response(true, 200, MASTER));
   responses.set(PLAYLIST_URL, response(true, 200, PLAYLIST));
 
+  if (dvrPlaylist || availableDvr.length) {
+    const dvrLines = ['#EXTM3U', '#EXT-X-TARGETDURATION:10'];
+    for (let n = 0; n < 4; n++) {
+      dvrLines.push(availableDvr.includes(n) ? n + '-unmuted.ts' : n + '.ts');
+    }
+    responses.set(DVR_URL, response(true, 200, dvrLines.join('\n')));
+  }
+
   for (let n = 0; n < 4; n++) {
     for (const quality of ['720p60', '480p30', '360p30']) {
       const url = Core.buildUnmutedUrl(PLAYLIST_URL, n + '-muted.ts', quality);
       const ok = (quality === '720p60' && available720.includes(n)) ||
         (quality === '480p30' && available480.includes(n));
       responses.set(url, response(ok, ok ? 200 : 404, ''));
+
+      if (quality === '720p60' && availableDvr.includes(n)) {
+        const exactUrl = Core.buildUnmutedUrl(
+          PLAYLIST_URL, n + '-muted.ts', quality, n + '-unmuted.ts');
+        responses.set(exactUrl, response(true, 200, ''));
+      }
     }
   }
 
-  const fetchMock = async url => responses.get(url) || response(false, 404, '');
+  const probeCalls = [];
+  const fetchMock = async (url, options) => {
+    if (options && options.headers && options.headers.Range) {
+      probeCalls.push({ url, options });
+    }
+    return responses.get(url) || response(false, 404, '');
+  };
 
   const browser = {
     storage: {
@@ -162,7 +185,8 @@ function createHarness({
   const source = fs.readFileSync(path.join(__dirname, '..', 'background.js'), 'utf8');
   vm.runInContext(source, context, { filename: 'background.js' });
 
-  return { listeners, sync, session, browser, context, allowLowerQuality, injectDelay };
+  return { listeners, sync, session, browser, context, probeCalls,
+    allowLowerQuality, injectDelay };
 }
 
 async function startScan(harness) {
@@ -214,6 +238,52 @@ test('redirects available segments and leaves purged ones muted', async () => {
   assert.equal(stats.stats.total, 4);
   assert.equal(stats.stats.restored, 2);
   assert.equal(stats.stats.lowerQuality, 0);
+  assert.equal(stats.stats.dvrRestored, 0);
+});
+
+test('uses exact unmuted filenames from the DVR playlist', async () => {
+  const harness = createHarness({ available720: [0, 2], availableDvr: [0, 2] });
+  await scan(harness);
+
+  const exactUrl = Core.buildUnmutedUrl(
+    PLAYLIST_URL, '0-muted.ts', '720p60', '0-unmuted.ts');
+  assert.deepEqual(await redirectFor(harness, '0-muted.ts'), {
+    redirectUrl: exactUrl
+  });
+  assert.deepEqual(await redirectFor(harness, '2-muted.ts'), {
+    redirectUrl: Core.buildUnmutedUrl(
+      PLAYLIST_URL, '2-muted.ts', '720p60', '2-unmuted.ts')
+  });
+  assert.deepEqual(await redirectFor(harness, '3-muted.ts'), {});
+
+  const stats = await harness.listeners.message[0]({ type: 'tvu:stats', tabId: TAB_ID });
+  assert.equal(stats.stats.restored, 2);
+  assert.equal(stats.stats.dvrRestored, 2);
+});
+
+test('falls back to plain filenames when the DVR playlist is missing', async () => {
+  const harness = createHarness();
+  await scan(harness);
+
+  assert.deepEqual(await redirectFor(harness, '0-muted.ts'), {
+    redirectUrl: Core.buildUnmutedUrl(PLAYLIST_URL, '0-muted.ts', '720p60')
+  });
+  assert.equal(harness.session.redirects[
+    'https://vod123.cloudfront.net/vod/12345/720p60/0-muted.ts'
+  ].endsWith('/0.ts'), true);
+});
+
+test('probes with only the Range header', async () => {
+  const harness = createHarness();
+  await scan(harness);
+
+  assert.ok(harness.probeCalls.length > 0, 'probe requests were recorded');
+  for (const call of harness.probeCalls) {
+    assert.deepEqual(Object.keys(call.options).sort(), ['headers', 'signal']);
+    assert.deepEqual(JSON.parse(JSON.stringify(call.options.headers)),
+      { Range: 'bytes=0-1' });
+    assert.equal(Object.prototype.hasOwnProperty.call(call.options, 'cache'), false);
+  }
 });
 
 test('redirects segment requests that carry query tokens', async () => {

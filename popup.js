@@ -47,7 +47,8 @@ async function refreshStats() {
       return;
     }
     const extra = stats.lowerQuality ? ', ' + stats.lowerQuality + ' from a lower quality' : '';
-    element.textContent = stats.restored + '/' + stats.total + ' segments recovered' + extra +
+    const dvr = stats.dvrRestored ? ', ' + stats.dvrRestored + ' via index-dvr' : '';
+    element.textContent = stats.restored + '/' + stats.total + ' segments recovered' + extra + dvr +
       ' (' + (stats.quality || 'unknown quality') + ').';
   } catch (error) {
     element.textContent = 'Could not read scan results: ' + (error && error.message || error);

@@ -109,8 +109,56 @@
     return String(name).replace(/-muted(\.(?:ts|mp4))$/i, '$1');
   }
 
+  /**
+   * Candidate filenames for the unmuted original of a muted segment.
+   *
+   * Twitch commonly keeps recoverable originals as "12-unmuted.ts" or
+   * "12-unmuted.mp4", not as the plain "12.ts"/"12.mp4" name. The plain name is
+   * still tried as a fallback for older VODs.
+   */
+  function unmutedNameCandidates(name) {
+    const match = /^(\d+)-muted\.(ts|mp4)$/i.exec(String(name));
+    if (!match) {
+      const plain = unmutedName(name);
+      return plain === String(name) ? [String(name)] : [plain];
+    }
+    return [
+      match[1] + '-unmuted.' + match[2],
+      match[1] + '.' + match[2]
+    ];
+  }
+
+  /** Build the unmuted sibling playlist URL for a muted media playlist. */
+  function dvrPlaylistUrl(playlistUrl) {
+    const url = new URL(playlistUrl);
+    url.pathname = url.pathname.replace(/[^/]*$/, 'index-dvr.m3u8');
+    url.search = '';
+    url.hash = '';
+    return url.href;
+  }
+
+  /**
+   * Read exact unmuted filenames from an index-dvr.m3u8 playlist.
+   * Returns a map of segment number -> filename.
+   */
+  function parseUnmutedPlaylist(text) {
+    const names = {};
+    const lines = String(text == null ? '' : text).split(/\r?\n/);
+
+    for (const raw of lines) {
+      const line = raw.trim();
+      if (!line || line.startsWith('#')) continue;
+
+      const file = line.split('?')[0].split('#')[0].split('/').pop();
+      const match = /^(\d+)-unmuted\.(ts|mp4)$/i.exec(file);
+      if (match) names[match[1]] = file;
+    }
+
+    return names;
+  }
+
   /** Build the unmuted segment URL for a given quality directory. */
-  function buildUnmutedUrl(playlistUrl, mutedName, quality) {
+  function buildUnmutedUrl(playlistUrl, mutedName, quality, unmutedFileName) {
     const url = new URL(playlistUrl);
     const parts = url.pathname.split('/');
     if (parts.length >= 2) {
@@ -118,7 +166,7 @@
     } else {
       parts.unshift(quality);
     }
-    parts[parts.length - 1] = unmutedName(mutedName);
+    parts[parts.length - 1] = unmutedFileName || unmutedName(mutedName);
     url.pathname = parts.join('/');
     url.search = '';
     url.hash = '';
@@ -235,6 +283,9 @@
     parseMasterPlaylist,
     parseMutedPlaylist,
     unmutedName,
+    unmutedNameCandidates,
+    dvrPlaylistUrl,
+    parseUnmutedPlaylist,
     buildUnmutedUrl,
     qualitiesToTry,
     buildSeekbarBands,

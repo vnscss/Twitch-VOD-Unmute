@@ -29,6 +29,14 @@ PLAYLIST = '\n'.join([
     '2-muted.ts',
 ])
 
+DVR_PLAYLIST = '\n'.join([
+    '#EXTM3U',
+    '#EXT-X-TARGETDURATION:10',
+    '0-unmuted.ts',
+    '1.ts',
+    '2-unmuted.ts',
+])
+
 PAGE = '''<!doctype html>
 <html><head><meta charset="utf-8"><title>TVU smoke</title></head>
 <body>
@@ -83,10 +91,16 @@ class Handler(BaseHTTPRequestHandler):
             body = PLAYLIST.encode()
             content_type = 'application/vnd.apple.mpegurl'
             status = 200
+        elif self.path == '/vod/12345/720p60/index-dvr.m3u8':
+            body = DVR_PLAYLIST.encode()
+            content_type = 'application/vnd.apple.mpegurl'
+            status = 200
         elif self.path.endswith('.ts'):
             name = self.path.rsplit('/', 1)[-1]
-            # 0 and 2 still have originals on the CDN; 1 was purged.
-            available = name in ('0-muted.ts', '2-muted.ts', '0.ts', '2.ts')
+            # 0 and 2 still have exact unmuted originals; 1 was purged.
+            available = name in (
+                '0-muted.ts', '2-muted.ts', '0-unmuted.ts', '2-unmuted.ts',
+                '0.ts', '2.ts')
             body = b'tvufixture' if available else b''
             content_type = 'video/mp2t'
             status = 200 if available else 404
@@ -175,17 +189,19 @@ def main() -> int:
             stderr=subprocess.STDOUT, text=True, start_new_session=True)
 
         playlist_path = '/vod/12345/720p60/index-muted-ABC.m3u8'
-        # Probes carry Range: bytes=0-1. Player requests do not. The two
-        # available segments must be redirected before the player's request
-        # reaches the server; the purged one stays muted.
+        dvr_path = '/vod/12345/720p60/index-dvr.m3u8'
+        # Probes carry Range: bytes=0-1. Player requests do not. The exact
+        # unmuted filenames come from index-dvr.m3u8 and must be used for the
+        # redirects; the purged middle segment stays muted.
         expected = [
             (playlist_path, None),
-            ('/vod/12345/720p60/0.ts', 'bytes=0-1'),
+            (dvr_path, None),
+            ('/vod/12345/720p60/0-unmuted.ts', 'bytes=0-1'),
             ('/vod/12345/720p60/1.ts', 'bytes=0-1'),
-            ('/vod/12345/720p60/2.ts', 'bytes=0-1'),
-            ('/vod/12345/720p60/0.ts', None),
+            ('/vod/12345/720p60/2-unmuted.ts', 'bytes=0-1'),
+            ('/vod/12345/720p60/0-unmuted.ts', None),
             ('/vod/12345/720p60/1-muted.ts', None),
-            ('/vod/12345/720p60/2.ts', None),
+            ('/vod/12345/720p60/2-unmuted.ts', None),
         ]
         deadline = time.time() + 45
         seen = []

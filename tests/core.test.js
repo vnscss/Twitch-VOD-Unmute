@@ -60,10 +60,50 @@ test('unmutedName only strips the trailing -muted marker', () => {
   assert.equal(Core.unmutedName('12-mutedmix.ts'), '12-mutedmix.ts');
 });
 
+test('unmutedNameCandidates prefers -unmuted and keeps the plain name as fallback', () => {
+  assert.deepEqual(Core.unmutedNameCandidates('12-muted.ts'),
+    ['12-unmuted.ts', '12.ts']);
+  assert.deepEqual(Core.unmutedNameCandidates('12-muted.mp4'),
+    ['12-unmuted.mp4', '12.mp4']);
+  assert.deepEqual(Core.unmutedNameCandidates('12.ts'), ['12.ts']);
+});
+
+test('dvrPlaylistUrl derives the unmuted sibling playlist', () => {
+  assert.equal(
+    Core.dvrPlaylistUrl(PLAYLIST_URL + '?token=x'),
+    'https://vod123.cloudfront.net/vod/12345/720p60/index-dvr.m3u8'
+  );
+});
+
+test('parseUnmutedPlaylist maps segment numbers to exact filenames', () => {
+  const text = [
+    '#EXTM3U',
+    '#EXT-X-TARGETDURATION:10',
+    '0-unmuted.ts',
+    '1.ts',
+    '2-unmuted.mp4?token=abc',
+    'https://cdn.example/3-unmuted.ts'
+  ].join('\n');
+
+  assert.deepEqual(Core.parseUnmutedPlaylist(text), {
+    '0': '0-unmuted.ts',
+    '2': '2-unmuted.mp4',
+    '3': '3-unmuted.ts'
+  });
+  assert.deepEqual(Core.parseUnmutedPlaylist(null), {});
+});
+
 test('buildUnmutedUrl replaces the quality directory and drops the query', () => {
   assert.equal(
     Core.buildUnmutedUrl(PLAYLIST_URL + '?token=x', '7-muted.ts', '480p30'),
     'https://vod123.cloudfront.net/vod/12345/480p30/7.ts'
+  );
+});
+
+test('buildUnmutedUrl accepts an exact unmuted filename', () => {
+  assert.equal(
+    Core.buildUnmutedUrl(PLAYLIST_URL + '?token=x', '7-muted.ts', '480p30', '7-unmuted.ts'),
+    'https://vod123.cloudfront.net/vod/12345/480p30/7-unmuted.ts'
   );
 });
 

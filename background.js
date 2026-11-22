@@ -206,7 +206,7 @@ browser.runtime.onInstalled.addListener(async () => {
 
 async function pageFetch(url) {
   try {
-    const response = await fetch(url, { cache: 'no-store' });
+    const response = await fetch(url);
     const text = await response.text();
     return { ok: response.ok, status: response.status, text };
   } catch (error) {
@@ -224,10 +224,11 @@ async function pageProbe(url) {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), 6000);
     try {
+      // Only ask for Range. Extra headers such as Cache-Control/Pragma can
+      // trigger a CDN preflight that Twitch rejects with 403.
       response = await fetch(url, {
         headers: { Range: 'bytes=0-1' },
-        signal: controller.signal,
-        cache: 'no-store'
+        signal: controller.signal
       });
       clearTimeout(timer);
       break;
@@ -466,7 +467,7 @@ async function fetchPlaylist(tabId, url) {
 
   // Fallback for cases where injection is unavailable (e.g. tab navigating).
   try {
-    const response = await fetch(url, { cache: 'no-store' });
+    const response = await fetch(url);
     if (response.ok) return await response.text();
   } catch (_) {
     /* nothing to do */
@@ -519,6 +520,13 @@ async function processPlaylist(item) {
   const parsed = Core.parseMutedPlaylist(text);
   if (!parsed.segments.length) return;
 
+  // Twitch's unmuted sibling playlist lists the exact filenames that are still
+  // available (for example "12-unmuted.mp4"). Prefer those names over guessing
+  // that the original is simply "12.mp4".
+  const dvrUrl = Core.dvrPlaylistUrl(url);
+  const dvrText = await fetchPlaylist(tabId, dvrUrl);
+  const unmutedNames = dvrText ? Core.parseUnmutedPlaylist(dvrText) : {};
+
   let currentQuality = '';
   try {
     const parts = new URL(url).pathname.split('/');
@@ -539,6 +547,7 @@ async function processPlaylist(item) {
   const touchedKeys = [];
   let restored = 0;
   let lowerQuality = 0;
+  let dvrRestored = 0;
   let failedProbes = 0;
   let requests = 0;
   let cursor = 0;
@@ -548,17 +557,25 @@ async function processPlaylist(item) {
       const segment = parsed.segments[cursor++];
       let found = null;
 
-      for (const quality of candidates) {
-        const target = Core.buildUnmutedUrl(url, segment.name, quality);
-        const outcome = await probe(tabId, target);
-        const errors = outcome.errors || 0;
-        failedProbes += errors;
-        requests += errors + 1;
+      const exactName = unmutedNames[String(segment.number)];
+      const names = Array.from(new Set(exactName
+        ? [exactName, ...Core.unmutedNameCandidates(segment.name)]
+        : Core.unmutedNameCandidates(segment.name)));
 
-        if (Core.isAvailable(outcome.status)) {
-          found = { quality, target };
-          break;
+      for (const quality of candidates) {
+        for (const name of names) {
+          const target = Core.buildUnmutedUrl(url, segment.name, quality, name);
+          const outcome = await probe(tabId, target);
+          const errors = outcome.errors || 0;
+          failedProbes += errors;
+          requests += errors + 1;
+
+          if (Core.isAvailable(outcome.status)) {
+            found = { quality, target, fromDvr: Boolean(exactName) && name === exactName };
+            break;
+          }
         }
+        if (found) break;
       }
 
       const mutedUrl = url.replace(/[^/]*$/, segment.name);
@@ -569,6 +586,7 @@ async function processPlaylist(item) {
         redirects[key] = found.target;
         restored++;
         if (found.quality !== currentQuality) lowerQuality++;
+        if (found.fromDvr) dvrRestored++;
       }
       results.push({ number: segment.number, quality: found ? found.quality : null });
 
@@ -591,6 +609,7 @@ async function processPlaylist(item) {
     total: parsed.segments.length,
     restored,
     lowerQuality,
+    dvrRestored,
     failedProbes,
     requests,
     at: Date.now()
