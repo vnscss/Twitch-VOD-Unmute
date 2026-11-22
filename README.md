@@ -8,7 +8,10 @@
 > and documentation were generated and reviewed with AI help.
 
 A Firefox Manifest V3 extension that restores audio to muted Twitch VODs when
-Twitch still serves the original (unmuted) media segments on its CDN.
+Twitch still serves the original (unmuted) media segments on its CDN. The
+`index-dvr.m3u8` / `-unmuted` recovery approach is public, community-documented
+Twitch HLS behavior; sources are listed in
+[Credits and acknowledgments](#credits-and-acknowledgments).
 
 ## What it does
 
@@ -162,6 +165,36 @@ was left muted.
   When that happens, detection or probing may need updating.
 - Live streams, ads, geo-blocked VODs, and subscriber-only VODs are out of
   scope.
+
+## Credits and acknowledgments
+
+The original behavioral reference was the Chrome Web Store extension
+**Twitch VOD Unmute** by Evan99w / Evan Williams, extension ID
+`kjbnfiobdlebmfgeklpfjjhcjfpbnkhf`, version `1.2.1`. Details about the observed
+artifact are in [PROVENANCE.md](PROVENANCE.md). This project is an independent
+reimplementation; no original code or assets were copied.
+
+The DVR playlist recovery technique is public prior art, not a discovery unique
+to this repository. It has been documented or used by:
+
+- [twitch-hls-vods](https://github.com/fonsleenaars/twitch-hls-vods) — early
+  documentation of Twitch VOD HLS playlists, including `index-dvr.m3u8`.
+- [TwitchRecover issue #5](https://github.com/TwitchRecover/TwitchRecover/issues/5)
+  and [PR #6](https://github.com/TwitchRecover/TwitchRecover/pull/6/files) —
+  reports `-unmuted.ts` entries in DVR playlists and rewrites them for playback.
+- [TwitchDownloader issue #182](https://github.com/lay295/TwitchDownloader/issues/182)
+  — suggests replacing `index-muted-*.m3u8` with `index-dvr.m3u8`;
+  [issue #1309](https://github.com/lay295/TwitchDownloader/issues/1309) —
+  discusses unmuted segment availability and cross-quality fallback; and
+  [issue #1315](https://github.com/lay295/TwitchDownloader/issues/1315) —
+  reports unmuted renames causing old segment URLs to return 403.
+- [twitch-dlp](https://github.com/DmitryScaletta/twitch-dlp) — implements
+  automatic unmuting of muted sections.
+
+These projects and discussions are credited as public documentation and prior
+art only. No code from them was copied, and no affiliation or endorsement is
+implied. This implementation was made with AI assistance (OpenCode), as noted
+above and in the commit trailers.
 
 ## Provenance and legal note
 

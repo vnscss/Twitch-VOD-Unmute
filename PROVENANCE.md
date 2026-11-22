@@ -38,11 +38,20 @@ scratch, including:
 
 - detect muted media playlists named `index-muted-*.m3u8`
 - parse muted media playlists and derive unmuted segment URLs
+- read the sibling `index-dvr.m3u8` playlist to learn exact unmuted filenames
 - probe unmuted segments from the page context
 - redirect available segments
 - optionally fall back to a codec-compatible lower quality
 - colour the seekbar for recovered / lower-quality / still-muted ranges
 - preserve the original settings model and defaults
+
+## Public sources for the DVR technique
+
+The `index-dvr.m3u8` / `-unmuted` naming behavior is publicly documented and
+used by community tools. The sources are listed in the README's
+[Credits and acknowledgments](README.md#credits-and-acknowledgments). They are
+acknowledged as prior art only; no code from them was copied into this
+repository.
 
 ## Legal status
 
