@@ -73,7 +73,9 @@ function createHarness({
   playlistToken = '',
   dvrRequiresToken = false,
   pageUrl = null,
-  playlistUrlOverride = null
+  playlistUrlOverride = null,
+  allForbidden = false,
+  playlistText = PLAYLIST
 } = {}) {
   const playlistUrl = (playlistUrlOverride || PLAYLIST_URL) + playlistToken;
   const dvrPlainUrl = Core.dvrPlaylistUrl(playlistUrl);
@@ -102,7 +104,7 @@ function createHarness({
   }
 
   responses.set(MASTER_URL, response(true, 200, MASTER));
-  responses.set(playlistUrl, response(true, 200, PLAYLIST));
+  responses.set(playlistUrl, response(true, 200, playlistText));
 
   if (dvrPlaylist || availableDvr.length) {
     const dvrLines = ['#EXTM3U', '#EXT-X-TARGETDURATION:10'];
@@ -134,6 +136,7 @@ function createHarness({
   const fetchMock = async (url, options) => {
     if (options && options.headers && options.headers.Range) {
       probeCalls.push({ url, options });
+      if (allForbidden) return response(false, 403, '');
     }
     return responses.get(url) || response(false, 404, '');
   };
@@ -262,6 +265,8 @@ test('redirects available segments and leaves purged ones muted', async () => {
   assert.equal(stats.stats.restored, 2);
   assert.equal(stats.stats.lowerQuality, 0);
   assert.equal(stats.stats.dvrRestored, 0);
+  assert.equal(stats.stats.probeStatus, 'checked');
+  assert.equal(stats.stats.truncated, false);
 });
 
 test('uses exact unmuted filenames from the DVR playlist', async () => {
@@ -688,6 +693,28 @@ test('a real VOD playlist on a popout keeps VOD diagnostics', async () => {
   });
   assert.equal(answer.diagnostics.mode, 'vod');
   assert.notEqual(answer.diagnostics.mode, 'live');
+});
+
+test('stops early when Twitch has not published unmuted originals', async () => {
+  const harness = createHarness({
+    allForbidden: true,
+    availableDvr: [0, 1, 2, 3],
+    playlistText: ['#EXTM3U', '0-muted.ts', '1-muted.ts', '2-muted.ts',
+      '3-muted.ts', '4-muted.ts', '5-muted.ts', '6-muted.ts'].join('\n')
+  });
+  await scan(harness);
+
+  assert.ok(harness.probeCalls.length > 0);
+  assert.ok(harness.probeCalls.length < 110,
+    'early stop must avoid a full 110-segment probe sweep');
+  const answer = await harness.listeners.message[0]({
+    type: 'tvu:stats', tabId: TAB_ID
+  });
+  assert.equal(answer.stats.restored, 0);
+  assert.equal(answer.stats.truncated, true);
+  assert.equal(answer.stats.probeStatus, 'forbidden');
+  assert.ok(answer.stats.statusCounts['403'] > 0);
+  assert.equal(answer.diagnostics.reason, 'unmuted originals not published yet');
 });
 
 test('an intermediate about:blank navigation does not clear VOD state', async () => {

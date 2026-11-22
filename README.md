@@ -47,6 +47,13 @@ popup.
 Segments that Twitch has permanently purged remain muted; the extension cannot
 recreate audio that is no longer served by the CDN.
 
+Twitch can also list `N-unmuted` names in `index-dvr.m3u8` before the files are
+actually published (for example while a counter-notification is pending). In
+that case every probe returns `403 AccessDenied`, including the muted originals
+themselves. The popup reports **“originals not published yet”** and the scan
+stops after a few wholly-forbidden segments instead of probing the whole VOD.
+Try again after Twitch publishes the unmuted files; there is no local workaround.
+
 ## Install
 
 ### Temporary install (developer mode)

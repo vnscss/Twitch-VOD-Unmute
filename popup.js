@@ -93,6 +93,15 @@ async function refreshStats() {
     if (stats.requests) parts.push(stats.requests + ' probes');
     if (stats.waitedSegments) parts.push(stats.waitedSegments + ' held requests');
     if (stats.durationMs) parts.push('scan ' + Math.round(stats.durationMs / 100) / 10 + 's');
+
+    if (stats.restored === 0 && stats.probeStatus === 'forbidden') {
+      element.textContent = stats.restored + '/' + stats.total +
+        ' segments recovered — originals not published yet.';
+      detail.textContent = 'Twitch listed unmuted filenames, but every probe was 403. ' +
+        'Try again later.' + (parts.length ? ' · ' + parts.join(' · ') : '');
+      return;
+    }
+
     detail.textContent = parts.length ? parts.join(' · ') : (info && info.reason) || '';
   } catch (error) {
     element.textContent = 'Could not read scan results: ' + (error && error.message || error);

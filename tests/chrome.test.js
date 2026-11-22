@@ -42,7 +42,12 @@ async function waitFor(predicate, timeout = 2000) {
   }
 }
 
-function createHarness({ pageUrl = null, playlistUrlOverride = null } = {}) {
+function createHarness({
+  pageUrl = null,
+  playlistUrlOverride = null,
+  allForbidden = false,
+  playlistText = PLAYLIST
+} = {}) {
   const playlistUrl = playlistUrlOverride || PLAYLIST_URL;
   const listeners = {
     installed: [],
@@ -69,10 +74,10 @@ function createHarness({ pageUrl = null, playlistUrlOverride = null } = {}) {
 
   const dvrUrl = Core.dvrPlaylistUrl(playlistUrl);
   const responses = new Map([
-    [playlistUrl, response(true, 200, PLAYLIST)],
+    [playlistUrl, response(true, 200, playlistText)],
     [dvrUrl, response(true, 200, DVR)]
   ]);
-  for (const n of [0, 1, 2]) {
+  for (let n = 0; n < 8; n++) {
     const plain = Core.buildUnmutedUrl(playlistUrl, n + '-muted.ts', '720p60');
     responses.set(plain, response(n !== 1, n === 1 ? 404 : 200, ''));
     if (n !== 1) {
@@ -82,7 +87,12 @@ function createHarness({ pageUrl = null, playlistUrlOverride = null } = {}) {
     }
   }
 
-  const fetchMock = async (url) => responses.get(url) || response(false, 404, '');
+  const fetchMock = async (url, options) => {
+    if (allForbidden && options && options.headers && options.headers.Range) {
+      return response(false, 403, '');
+    }
+    return responses.get(url) || response(false, 404, '');
+  };
 
   const chrome = {
     storage: {
@@ -240,6 +250,22 @@ test('a real vod-secure playlist generates scoped DNR rules', async () => {
   const stats = await statsFor(harness);
   assert.equal(stats.stats.restored, 2);
   assert.equal(stats.diagnostics.mode, 'vod');
+});
+
+test('unpublished unmuted originals create no DNR rules', async () => {
+  const harness = createHarness({
+    allForbidden: true,
+    playlistText: ['#EXTM3U', '0-muted.ts', '1-muted.ts', '2-muted.ts',
+      '3-muted.ts', '4-muted.ts', '5-muted.ts', '6-muted.ts'].join('\n')
+  });
+  await startScan(harness);
+
+  assert.equal(harness.getSessionRules().length, 0);
+  const stats = await statsFor(harness);
+  assert.equal(stats.stats.restored, 0);
+  assert.equal(stats.stats.probeStatus, 'forbidden');
+  assert.equal(stats.stats.truncated, true);
+  assert.equal(stats.diagnostics.reason, 'unmuted originals not published yet');
 });
 
 test('closing a tab removes only that tab DNR rules', async () => {
