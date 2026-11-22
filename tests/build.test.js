@@ -14,6 +14,16 @@ test('browser manifests stay on the same version', () => {
   assert.equal(JSON.parse(fs.readFileSync(path.join(root, 'manifest.json'), 'utf8')).version, ff.version);
 });
 
+test('store-facing names avoid browser trademarks', () => {
+  for (const manifest of [ff, chrome]) {
+    for (const field of ['name', 'description']) {
+      assert.ok(!/\b(mozilla|firefox|chrome)\b/i.test(manifest[field]),
+        `${field} contains a browser trademark: ${manifest[field]}`);
+    }
+    assert.ok(!/\b(mozilla|firefox|chrome)\b/i.test(manifest.action.default_title));
+  }
+});
+
 test('Firefox target keeps blocking webRequest', () => {
   assert.ok(ff.browser_specific_settings.gecko.id);
   assert.equal(ff.browser_specific_settings.gecko.strict_min_version, '140.0');

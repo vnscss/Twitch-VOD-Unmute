@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
-  "name": "Twitch VOD Unmute (Firefox)",
-  "description": "Reimplementation of the Twitch VOD Unmute extension for Firefox. Restores muted VOD audio while Twitch still serves the original segments.",
+  "name": "Twitch VOD Unmute",
+  "description": "Independent reimplementation that restores muted Twitch VOD audio using the original unmuted CDN segments when they are still available.",
   "version": "1.0.0",
   "browser_specific_settings": {
     "gecko": {
@@ -24,7 +24,7 @@
     ]
   },
   "action": {
-    "default_title": "Twitch VOD Unmute (Firefox)",
+    "default_title": "Twitch VOD Unmute",
     "default_popup": "popup.html"
   },
   "icons": {

@@ -1,6 +1,6 @@
 {
   "manifest_version": 3,
-  "name": "Twitch VOD Unmute (Chrome)",
+  "name": "Twitch VOD Unmute",
   "description": "Independent reimplementation that restores muted Twitch VOD audio using the original unmuted CDN segments when they are still available.",
   "version": "1.0.0",
   "minimum_chrome_version": "111.0",
@@ -8,7 +8,7 @@
     "service_worker": "background-chrome.js"
   },
   "action": {
-    "default_title": "Twitch VOD Unmute (Chrome)",
+    "default_title": "Twitch VOD Unmute",
     "default_popup": "popup.html"
   },
   "icons": {
