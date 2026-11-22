@@ -194,13 +194,13 @@ if [ "$BUILD_FIREFOX" -eq 1 ]; then
   if [ "$STRICT_LINT" -eq 1 ]; then LINT_ARGS+=(--warnings-as-errors); fi
   "$WEB_EXT" "${LINT_ARGS[@]}"
 
-  FF_XPI="$OUT_ABS/twitch-vod-unmute-firefox-${VERSION}.xpi"
+  FF_XPI="$OUT_ABS/twitch-vod-unmute-${VERSION}.xpi"
   rm -f "$FF_XPI"
   "$WEB_EXT" build \
     --source-dir "$FF_STAGE" \
     --config "$ROOT/web-ext-config.cjs" \
     --artifacts-dir "$OUT_ABS" \
-    --filename "twitch-vod-unmute-firefox-${VERSION}.xpi" \
+    --filename "twitch-vod-unmute-${VERSION}.xpi" \
     --overwrite-dest
 
   if [ ! -f "$FF_XPI" ]; then
