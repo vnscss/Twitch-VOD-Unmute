@@ -42,7 +42,8 @@ async function waitFor(predicate, timeout = 2000) {
   }
 }
 
-function createHarness() {
+function createHarness({ pageUrl = null, playlistUrlOverride = null } = {}) {
+  const playlistUrl = playlistUrlOverride || PLAYLIST_URL;
   const listeners = {
     installed: [],
     completed: [],
@@ -66,16 +67,17 @@ function createHarness() {
     };
   }
 
+  const dvrUrl = Core.dvrPlaylistUrl(playlistUrl);
   const responses = new Map([
-    [PLAYLIST_URL, response(true, 200, PLAYLIST)],
-    [DVR_URL, response(true, 200, DVR)]
+    [playlistUrl, response(true, 200, PLAYLIST)],
+    [dvrUrl, response(true, 200, DVR)]
   ]);
   for (const n of [0, 1, 2]) {
-    const plain = Core.buildUnmutedUrl(PLAYLIST_URL, n + '-muted.ts', '720p60');
+    const plain = Core.buildUnmutedUrl(playlistUrl, n + '-muted.ts', '720p60');
     responses.set(plain, response(n !== 1, n === 1 ? 404 : 200, ''));
     if (n !== 1) {
       const exact = Core.buildUnmutedUrl(
-        PLAYLIST_URL, n + '-muted.ts', '720p60', n + '-unmuted.ts');
+        playlistUrl, n + '-muted.ts', '720p60', n + '-unmuted.ts');
       responses.set(exact, response(true, 200, ''));
     }
   }
@@ -116,7 +118,7 @@ function createHarness() {
     tabs: {
       onRemoved: { addListener: fn => listeners.removed.push(fn) },
       onUpdated: { addListener: fn => listeners.updated.push(fn) },
-      query: (info, cb) => cb([{ id: TAB_ID }])
+      query: (info, cb) => cb([{ id: TAB_ID, url: pageUrl || undefined }])
     },
     declarativeNetRequest: {
       getSessionRules: async () => sessionRules.slice(),
@@ -162,7 +164,7 @@ function createHarness() {
     vm.runInContext(source, context, { filename: file });
   }
 
-  return { listeners, sync, session, chrome, dnrCalls,
+  return { listeners, sync, session, chrome, dnrCalls, playlistUrl,
     getSessionRules: () => sessionRules };
 }
 
@@ -180,9 +182,9 @@ async function startScan(harness) {
   await harness.chrome.storage.sync.set({ seekbar: false, quality: false }, () => {});
 
   const muted = harness.listeners.completed.find(entry =>
-    entry.filter.urls.includes('https://*.cloudfront.net/*'));
+    entry.filter.urls.includes('https://*.twitch.tv/*'));
   assert.ok(muted, 'muted playlist listener registered');
-  await muted.fn({ tabId: TAB_ID, url: PLAYLIST_URL, type: 'xmlhttprequest' });
+  await muted.fn({ tabId: TAB_ID, url: harness.playlistUrl, type: 'xmlhttprequest' });
   await waitFor(() => harness.session.stats && harness.session.stats[TAB_ID]);
 }
 
@@ -221,6 +223,25 @@ test('Chrome adapter creates scoped DNR redirect rules', async () => {
   assert.equal(stats.stats.dvrRestored, 2);
 });
 
+test('a real vod-secure playlist generates scoped DNR rules', async () => {
+  const harness = createHarness({
+    playlistUrlOverride:
+      'https://vod-secure.twitch.tv/8f6ba87341845cda3e48_alanzoka_34721465552_1238758894/' +
+      '720p60/index-muted-A1B2-C3_D4.m3u8',
+    pageUrl: VOD_POPOUT_URL
+  });
+  await startScan(harness);
+
+  const rules = harness.getSessionRules();
+  const expected = Core.buildUnmutedUrl(
+    harness.playlistUrl, '0-muted.ts', '720p60', '0-unmuted.ts');
+  assert.ok(rules.some(rule => rule.action.redirect.url === expected),
+    'real VOD playlist produces redirect rules');
+  const stats = await statsFor(harness);
+  assert.equal(stats.stats.restored, 2);
+  assert.equal(stats.diagnostics.mode, 'vod');
+});
+
 test('closing a tab removes only that tab DNR rules', async () => {
   const harness = createHarness();
   await startScan(harness);
@@ -250,11 +271,11 @@ test('disabling the extension clears DNR rules', async () => {
 });
 
 test('Chrome ignores live playlists and creates no DNR rules', async () => {
-  const harness = createHarness();
+  const harness = createHarness({ pageUrl: 'https://www.twitch.tv/live' });
   for (const fn of harness.listeners.installed) await fn({ reason: 'install' });
 
   const muted = harness.listeners.completed.find(entry =>
-    entry.filter.urls.includes('https://*.cloudfront.net/*'));
+    entry.filter.urls.includes('https://*.twitch.tv/*'));
   await muted.fn({ tabId: TAB_ID, url: LIVE_PLAYLIST_URL, type: 'xmlhttprequest' });
   await new Promise(resolve => setTimeout(resolve, 25));
 

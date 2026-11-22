@@ -37,6 +37,18 @@ function normaliseHex(value, fallback) {
   return match ? '#' + match[1].toUpperCase() : fallback;
 }
 
+function diagnosticDetail(info) {
+  if (!info) return '';
+  const short = (value) => value && value.length > 100
+    ? value.slice(0, 97) + '…'
+    : value;
+  const parts = [];
+  if (info.reason) parts.push(info.reason);
+  if (info.url) parts.push(short(info.url));
+  if (info.pageUrl && info.pageUrl !== info.url) parts.push('page: ' + short(info.pageUrl));
+  return parts.join(' · ');
+}
+
 async function refreshStats() {
   const element = $('stats');
   const detail = $('diagnostics');
@@ -49,16 +61,18 @@ async function refreshStats() {
     if (!stats) {
       if (info && info.mode === 'live') {
         element.textContent = 'Live stream detected — ignored.';
-        detail.textContent = 'No media requests were delayed, probed, or redirected.';
+        detail.textContent = diagnosticDetail(info) ||
+          'No media requests were delayed, probed, or redirected.';
       } else if (info && info.activeScan) {
         element.textContent = 'Scanning VOD…';
         detail.textContent = 'Segment requests are waiting only for this VOD.';
       } else if (info && info.mode === 'vod') {
         element.textContent = 'VOD page detected — waiting for media.';
-        detail.textContent = 'The VOD playlist has not been scanned yet.';
+        detail.textContent = diagnosticDetail(info) ||
+          'The VOD playlist has not been scanned yet.';
       } else if (info && info.mode === 'unknown') {
         element.textContent = 'No scan for this page.';
-        detail.textContent = info.reason || 'No VOD playlist observed.';
+        detail.textContent = diagnosticDetail(info) || 'No VOD playlist observed.';
       } else {
         element.textContent = 'No scan yet. Open a muted VOD and wait a few seconds.';
         detail.textContent = '';

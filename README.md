@@ -31,13 +31,18 @@ When Twitch serves a muted VOD playlist, this extension:
 6. Redirects only the requests whose original segment is still available.
 7. Optionally colours the seekbar to show which parts were recovered.
 
-Live streams are explicitly out of scope. A muted playlist outside a
-`/vod/<id>/` CDN path is ignored without fetching DVR data, probing segments,
-or delaying any request. Both `twitch.tv/videos/<id>` pages and popout player
-URLs with `?video=<id>` count as VOD context. Navigating away from a VOD
-cancels an in-flight scan, releases waiting requests, and removes that tab's
-redirects/rules. Transitional or unknown Twitch URLs are not mislabelled as
-live in the popup.
+Live streams are explicitly out of scope. A muted playlist is scanned only
+when it has a positive VOD signal: the `vod-secure.twitch.tv` VOD CDN host
+(real VOD playlists use a hashed directory such as
+`<hash>_<channel>_<ids>/720p60/` and have no `/vod/<id>/` path), the legacy
+`/vod/<id>/` path, or a VOD page open in that tab. Both `twitch.tv/videos/<id>`
+pages and popout player URLs with `?video=<id>` count as VOD context. A
+playlist with none of those signals is ignored without fetching DVR data,
+probing segments, or delaying any request. Navigating away from a VOD cancels
+an in-flight scan, releases waiting requests, and removes that tab's
+redirects/rules. Intermediate URLs such as `about:blank` do not cancel a scan,
+and transitional or unknown Twitch URLs are not mislabelled as live in the
+popup.
 
 Segments that Twitch has permanently purged remain muted; the extension cannot
 recreate audio that is no longer served by the CDN.

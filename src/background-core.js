@@ -287,6 +287,55 @@
       }
     }
 
+    // Page context is needed to tell a VOD playlist from a live playlist when
+    // the CDN URL has no VOD marker. Persist it so a Chrome service-worker
+    // restart does not lose the classification.
+    async function setPageUrl(tabId, url) {
+      pageUrlsByTab.set(tabId, url);
+      const pages = await sessionGet('pageUrls', {});
+      pages[tabId] = url;
+      await sessionSet('pageUrls', pages);
+    }
+
+    async function getPageUrl(tabId) {
+      if (pageUrlsByTab.has(tabId)) return pageUrlsByTab.get(tabId);
+      const pages = await sessionGet('pageUrls', {});
+      return pages[tabId] || null;
+    }
+
+    async function forgetPageUrl(tabId) {
+      pageUrlsByTab.delete(tabId);
+      const pages = await sessionGet('pageUrls', {});
+      delete pages[tabId];
+      await sessionSet('pageUrls', pages);
+    }
+
+    async function seedPageUrls() {
+      if (!api.tabs || !api.tabs.query) return;
+      try {
+        const tabs = await api.tabs.query({});
+        const pages = await sessionGet('pageUrls', {});
+        for (const tab of tabs || []) {
+          if (tab && tab.id != null && tab.url && /^https?:\/\//i.test(tab.url)) {
+            pageUrlsByTab.set(tab.id, tab.url);
+            pages[tab.id] = tab.url;
+            if (Core.isVodPageUrl(tab.url)) {
+              const vodId = Core.vodIdFromUrl(tab.url);
+              await recordDiagnostics(tab.id, {
+                mode: 'vod',
+                reason: 'VOD page',
+                url: tab.url,
+                vodId: vodId || undefined
+              });
+            }
+          }
+        }
+        await sessionSet('pageUrls', pages);
+      } catch (error) {
+        console.warn('[tvu] could not seed page URLs', error && error.message);
+      }
+    }
+
     async function recordDiagnostics(tabId, patch) {
       const key = 'diagnostics:' + tabId;
       const current = (await sessionGet(key, null)) || {};
@@ -328,6 +377,7 @@
       await sessionSet('probes', {});
       await sessionSet('stats', {});
       await sessionSet('tabUrls', {});
+      await sessionSet('pageUrls', {});
       await clearAllRules();
     });
 
@@ -605,18 +655,21 @@
     let processing = false;
 
     api.webRequest.onCompleted.addListener(
-      (details) => {
+      async (details) => {
         if (details.tabId < 0) return;
         if (!Core.isMutedPlaylistUrl(details.url)) return;
 
-        // Lives can use the same `index-muted-*.m3u8` filename. Without the
-        // `/vod/<id>/` gate the shared core would probe and, on Firefox, hold
-        // live segments. Diagnostics let the popup confirm that it was ignored.
-        if (!Core.isVodMutedPlaylistUrl(details.url)) {
-          recordDiagnostics(details.tabId, {
-            mode: 'live',
-            reason: 'playlist outside /vod/',
-            url: details.url
+        // Live and VOD both use `index-muted-*.m3u8`, so a positive VOD signal
+        // is required: the VOD CDN host, the legacy `/vod/<id>/` path, or a VOD
+        // page in this tab. Real VOD playlists live on vod-secure.twitch.tv
+        // with a hashed directory and no `/vod/` path at all.
+        const pageUrl = await getPageUrl(details.tabId);
+        if (!Core.isVodMutedPlaylistUrl(details.url, pageUrl)) {
+          await recordDiagnostics(details.tabId, {
+            mode: pageUrl && Core.isLivePageUrl(pageUrl) ? 'live' : 'unknown',
+            reason: 'playlist outside VOD context',
+            url: details.url,
+            pageUrl: pageUrl || undefined
           });
           return;
         }
@@ -968,7 +1021,7 @@
 
     api.tabs.onRemoved.addListener(async (tabId) => {
       await clearTabState(tabId);
-      pageUrlsByTab.delete(tabId);
+      await forgetPageUrl(tabId);
     });
 
     // Navigation classification is diagnostic only: it must never clear VOD
@@ -978,11 +1031,14 @@
       api.tabs.onUpdated.addListener(async (tabId, changeInfo) => {
         const url = changeInfo && changeInfo.url;
         if (!url) return;
+        // about:blank, chrome:// and extension pages are intermediate states,
+        // not a context change. Treating them as one would cancel active scans.
+        if (!/^https?:\/\//i.test(url)) return;
 
-        const previousUrl = pageUrlsByTab.get(tabId) || null;
+        const previousUrl = await getPageUrl(tabId);
         const previousVodId = previousUrl ? Core.vodIdFromUrl(previousUrl) : null;
         const vodId = Core.isVodUrl(url) ? null : Core.vodIdFromUrl(url);
-        pageUrlsByTab.set(tabId, url);
+        await setPageUrl(tabId, url);
 
         if (Core.isVodUrl(url) || vodId) {
           // A different VOD in the same tab must not inherit old redirects.
@@ -1056,6 +1112,10 @@
         };
       })();
     });
+
+    // Covers a VOD that was already open when the extension loaded and Chrome
+    // service-worker restarts, where no onUpdated event will fire for it.
+    seedPageUrls();
 
     // Exposed for tests and diagnostics; no page script can reach this object.
     return {

@@ -18,9 +18,24 @@ test('VOD gates distinguish CDN VOD paths, VOD pages and live paths', () => {
   assert.equal(Core.isVodUrl(PLAYLIST_URL), true);
   assert.equal(Core.isVodUrl('https://live.cloudfront.net/live/chan/index-muted-A1.m3u8'), false);
   assert.equal(Core.isVodMutedPlaylistUrl(PLAYLIST_URL), true);
+
+  const realVodPlaylist =
+    'https://vod-secure.twitch.tv/8f6ba87341845cda3e48_alanzoka_34721465552_1238758894/' +
+    '720p60/index-muted-A1B2-C3_D4.m3u8?token=abc';
+  assert.equal(Core.isVodPlaylistUrl(realVodPlaylist), true);
+  assert.equal(Core.isVodUrl(realVodPlaylist), false);
+  assert.equal(Core.isMutedPlaylistUrl(realVodPlaylist), true);
+  assert.equal(Core.isVodMutedPlaylistUrl(realVodPlaylist), true);
   assert.equal(
     Core.isVodMutedPlaylistUrl('https://live.cloudfront.net/live/chan/index-muted-A1.m3u8'),
     false);
+  // A CDN-agnostic playlist is still a VOD when the tab is a VOD page.
+  assert.equal(Core.isVodMutedPlaylistUrl(
+    'https://x.cloudfront.net/hash/720p60/index-muted-A1.m3u8',
+    'https://player.twitch.tv/?video=2936135145'), true);
+  assert.equal(Core.isVodMutedPlaylistUrl(
+    'https://x.cloudfront.net/hash/720p60/index-muted-A1.m3u8',
+    'https://www.twitch.tv/alanzoka'), false);
   assert.equal(Core.isVodPageUrl('https://www.twitch.tv/videos/2936135145'), true);
   assert.equal(Core.isVodPageUrl('https://www.twitch.tv/alanzoka/video/2936135145'), true);
   assert.equal(Core.isVodPageUrl(

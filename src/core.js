@@ -26,7 +26,7 @@
     opacity: 0.5
   };
 
-  const MUTED_PLAYLIST_RE = /index-muted-[A-Z0-9]+\.m3u8$/i;
+  const MUTED_PLAYLIST_RE = /index-muted-[A-Z0-9_-]+\.m3u8$/i;
   const SEGMENT_FILE_RE = /^\d+(?:-muted)?\.(?:ts|mp4)$/i;
   const MUTED_SEGMENT_RE = /^(\d+)-muted\.(ts|mp4)$/i;
 
@@ -53,13 +53,34 @@
   }
 
   /**
+   * True for CDN hosts that only serve VOD media.
+   *
+   * Real VOD playlists use a hashed directory on `vod-secure.twitch.tv`, e.g.
+   * `<hash>_<channel>_<ids>/720p60/index-muted-XXXXXXXX.m3u8`, with no
+   * `/vod/<id>/` path. Requiring that path would reject every such VOD.
+   * Live playlists use the ttvnw/cloudfront/akamaized hosts instead.
+   */
+  function isVodPlaylistUrl(url) {
+    let hostname;
+    try {
+      hostname = new URL(url).hostname;
+    } catch (_) {
+      return false;
+    }
+    return /(^|\.)vod-secure\.twitch\.tv$|^vod\.twitch\.tv$/i.test(hostname);
+  }
+
+  /**
    * True only for muted playlists that belong to a VOD.
    *
-   * Live HLS playlists can also be named `index-muted-*.m3u8`. The extension
-   * must never probe or delay live traffic, so the VOD path is mandatory.
+   * Live HLS playlists can also be named `index-muted-*.m3u8`, so a positive
+   * VOD signal is mandatory. It can be the CDN host, the legacy `/vod/<id>/`
+   * path, or the page the request came from being a VOD page.
    */
-  function isVodMutedPlaylistUrl(url) {
-    return isVodUrl(url) && isMutedPlaylistUrl(url);
+  function isVodMutedPlaylistUrl(url, pageUrl) {
+    if (!isMutedPlaylistUrl(url)) return false;
+    if (isVodPlaylistUrl(url) || isVodUrl(url)) return true;
+    return Boolean(pageUrl && isVodPageUrl(pageUrl));
   }
 
   /**
@@ -388,6 +409,7 @@
     DEFAULT_SETTINGS,
     isMutedPlaylistUrl,
     isVodUrl,
+    isVodPlaylistUrl,
     isVodMutedPlaylistUrl,
     isVodPageUrl,
     isLivePageUrl,
