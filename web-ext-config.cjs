@@ -4,7 +4,10 @@ module.exports = {
   ignoreFiles: [
     'tests/**',
     'web-ext-artifacts/**',
-    'build-xpi.sh',
+    'build-all.sh',
+    'background-chrome.js',
+    'manifest.firefox.json',
+    'manifest.chrome.json',
     'README.md',
     'PROVENANCE.md',
     'LICENSE',

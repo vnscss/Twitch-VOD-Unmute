@@ -83,10 +83,11 @@ class FakeNode {
 }
 
 function loadPaintSeekbar(root) {
-  const source = fs.readFileSync(path.join(__dirname, '..', 'background.js'), 'utf8');
+  const source = fs.readFileSync(
+    path.join(__dirname, '..', 'src', 'background-core.js'), 'utf8');
   const start = source.indexOf('function paintSeekbar(');
-  const end = source.indexOf('\nasync function inject(', start);
-  assert.ok(start >= 0 && end > start, 'paintSeekbar must exist in background.js');
+  const end = source.indexOf('\n    async function inject(', start);
+  assert.ok(start >= 0 && end > start, 'paintSeekbar must exist in background-core.js');
 
   const context = vm.createContext({
     window: {},
@@ -105,7 +106,7 @@ function loadPaintSeekbar(root) {
   vm.runInContext(
     source.slice(start, end) + '\nthis.paintSeekbar = paintSeekbar;',
     context,
-    { filename: 'background.js#paintSeekbar' }
+    { filename: 'background-core.js#paintSeekbar' }
   );
   return context.paintSeekbar;
 }

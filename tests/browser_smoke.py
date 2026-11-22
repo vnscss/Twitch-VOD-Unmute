@@ -142,12 +142,15 @@ def build_test_extension(directory: Path) -> None:
     (directory / 'smoke-content.js').write_text(
         "document.documentElement.setAttribute('data-tvu-smoke-loaded', '1');\n")
 
-    background_path = directory / 'background.js'
+    # The shared background core owns the webRequest filters. Firefox and
+    # Chrome adapters only select the redirect mechanism.
+    background_path = directory / 'src' / 'background-core.js'
     background = background_path.read_text()
     old = "      'https://*.twitch.tv/*'\n"
     new = "      'https://*.twitch.tv/*',\n      'http://127.0.0.1/*'\n"
     if background.count(old) != 2:
-        raise RuntimeError('unexpected webRequest filter layout in background.js')
+        raise RuntimeError(
+            'unexpected webRequest filter layout in src/background-core.js')
     background = background.replace(old, new)
     background_path.write_text(background)
 

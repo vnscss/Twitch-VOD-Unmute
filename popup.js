@@ -9,7 +9,7 @@ function $(id) {
 }
 
 async function loadSettings() {
-  const values = await browser.storage.sync.get(KEYS);
+  const values = await TVUApi.storage.sync.get(KEYS);
   return globalThis.TVUCore.normaliseSettings(values);
 }
 
@@ -28,7 +28,7 @@ function renderSettings(settings) {
 }
 
 async function saveSettings(patch) {
-  await browser.storage.sync.set(patch);
+  await TVUApi.storage.sync.set(patch);
   renderSettings(await loadSettings());
 }
 
@@ -40,7 +40,8 @@ function normaliseHex(value, fallback) {
 async function refreshStats() {
   const element = $('stats');
   try {
-    const response = await browser.runtime.sendMessage({ type: 'tvu:stats' });
+    const response = await TVUApi.runtime.sendMessage({ type: 'tvu:stats' });
+    if (response && response.error) throw new Error(response.error);
     const stats = response && response.stats;
     if (!stats) {
       element.textContent = 'No scan yet. Open a muted VOD and wait a few seconds.';
@@ -88,7 +89,8 @@ document.addEventListener('DOMContentLoaded', async () => {
   });
 
   $('reset').addEventListener('click', async () => {
-    await browser.runtime.sendMessage({ type: 'tvu:stats', clear: true });
+    const response = await TVUApi.runtime.sendMessage({ type: 'tvu:stats', clear: true });
+    if (response && response.error) throw new Error(response.error);
     await refreshStats();
   });
 });

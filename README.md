@@ -1,4 +1,4 @@
-# Twitch VOD Unmute (Firefox)
+# Twitch VOD Unmute (Firefox port + Chrome export)
 
 > **This project is a reimplementation.** It is not the original Chrome
 > extension, and it is not published by, affiliated with, or endorsed by the
@@ -7,8 +7,10 @@
 > **This repository was made with AI assistance** (OpenCode). The code, tests,
 > and documentation were generated and reviewed with AI help.
 
-A Firefox Manifest V3 extension that restores audio to muted Twitch VODs when
-Twitch still serves the original (unmuted) media segments on its CDN. The
+Manifest V3 extensions that restore audio to muted Twitch VODs when Twitch
+still serves the original (unmuted) media segments on its CDN. The repository
+ships a Firefox target and a functional Chrome target built from the same
+playlist/probe core. The
 `index-dvr.m3u8` / `-unmuted` recovery approach is public, community-documented
 Twitch HLS behavior; sources are listed in
 [Credits and acknowledgments](#credits-and-acknowledgments).
@@ -47,18 +49,71 @@ The add-on is removed when Firefox restarts.
 web-ext run --source-dir .
 ```
 
-Build a packaged XPI with the included script (requires `zip` and `python3`):
+### Build packages
+
+`build-all.sh` stages clean target directories and exports both browsers by
+default. It requires `python3`, `zip`, `unzip`, and `web-ext` on `PATH`.
 
 ```sh
-./build-xpi.sh
-# writes web-ext-artifacts/twitch-vod-unmute-firefox-<version>.xpi
+./build-all.sh                 # Firefox XPI + Chrome Web Store ZIP
+./build-all.sh --firefox       # Firefox XPI only
+./build-all.sh --chrome        # Chrome ZIP only
+./build-all.sh --out DIR       # change the output directory
 ```
 
-You can then install the `.xpi` from `about:addons` or by dragging it onto a
-Firefox window. `web-ext build --source-dir .` also works if you already have
-`web-ext` installed.
+Outputs:
 
-Firefox 115 or newer is required (`strict_min_version` in `manifest.json`).
+```text
+web-ext-artifacts/twitch-vod-unmute-firefox-<version>.xpi
+web-ext-artifacts/twitch-vod-unmute-chrome-<version>.zip
+```
+
+`build-xpi.sh` remains as a Firefox-only wrapper. Firefox 140 or newer is
+required on desktop and Firefox for Android 142 or newer; this matches the
+manifest data-collection declaration required by current `web-ext`.
+
+### Verify or sign the Firefox XPI
+
+The build script verifies the archive structure, manifest fields, absence of
+development files, and (when present) Mozilla signature metadata. An existing
+XPI can be checked directly:
+
+```sh
+./build-all.sh --verify-xpi web-ext-artifacts/twitch-vod-unmute-firefox-1.0.0.xpi
+```
+
+A local unsigned XPI works with **Load Temporary Add-on**, Developer Edition,
+Nightly, or ESR with signature checks disabled. Release and Beta Firefox will
+not install it permanently. To get a self-distributed signed XPI, use AMO's
+unlisted channel:
+
+```sh
+export WEB_EXT_API_KEY='...'
+export WEB_EXT_API_SECRET='...'
+./build-all.sh --firefox --sign
+```
+
+`--sign` verifies that the result contains `META-INF/mozilla.rsa`,
+`META-INF/mozilla.sf`, and `META-INF/manifest.mf`. Each signed version needs a
+new version number and the same add-on ID. Never commit the AMO credentials.
+
+### Chrome target
+
+The Chrome ZIP has `manifest.json` at the archive root, as required by the
+Chrome Web Store. Unzip it and use **Load unpacked** at `chrome://extensions`,
+or upload the ZIP directly to the store.
+
+Chrome MV3 does not allow the Firefox blocking `webRequest` redirect path, so
+the Chrome target uses a service worker and session-scoped
+`declarativeNetRequest` rules scoped to the originating tab. The playlist parsing, DVR filename lookup, probing,
+seekbar painting, and popup settings are shared with Firefox through
+`src/core.js`, `src/background-core.js`, and `src/api.js`.
+
+A local CRX can also be produced, but it needs a stable PEM key:
+
+```sh
+CHROME_KEY=/path/to/twitch-vod-unmute.pem ./build-all.sh --crx
+```
 
 ## Usage
 
@@ -83,8 +138,8 @@ from a compatible lower quality, red = still muted.
 ## How it works
 
 The original Chrome extension used `declarativeNetRequest` rules and injected
-page scripts to probe Twitch's CDN. Firefox Manifest V3 does not support the
-same `service_worker`/DNR combination, so this port uses:
+page scripts to probe Twitch's CDN. Both targets here share that approach at
+the playlist/probe layer. The Firefox-specific pieces are:
 
 - `webRequest.onCompleted` to observe playlist requests.
 - `webRequest.onBeforeRequest` with `blocking` to redirect segment requests.
@@ -122,9 +177,9 @@ No data is collected or sent anywhere by this extension.
 
 ## Tests
 
-The test suite covers the pure playlist/quality logic, the real background
-script driven with mocked WebExtension APIs, and a real headless Firefox run
-against a local synthetic HLS server.
+The test suite covers the pure playlist/quality logic, both browser adapters
+driven with mocked WebExtension APIs, build-target manifests, and a real
+headless Firefox run against a local synthetic HLS server.
 
 Node is not required to use the extension. If it is not installed locally, a
 portable copy can be used for tests:
@@ -143,11 +198,12 @@ export PATH=/tmp/opencode/tools/node_modules/.bin:$PATH
 From the repository root:
 
 ```sh
-# Unit + integration tests (Node test runner; no browser required)
-node --test tests/core.test.js tests/integration.test.js tests/seekbar.test.js
+# Unit + integration + build-target tests (no browser required)
+node --test tests/core.test.js tests/integration.test.js tests/seekbar.test.js \
+  tests/build.test.js tests/chrome.test.js
 
-# Static extension validation
-web-ext lint --source-dir .
+# Static extension validation and dual export
+./build-all.sh --strict-lint
 
 # Real Firefox smoke test (uses a local mock CDN)
 python3 tests/browser_smoke.py

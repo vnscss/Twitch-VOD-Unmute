@@ -1,5 +1,5 @@
 /*
- * Pure logic for the Firefox port of Twitch VOD Unmute.
+ * Pure shared logic for the Firefox and Chrome builds of Twitch VOD Unmute.
  *
  * This file intentionally contains no WebExtension API calls so it can be
  * unit-tested directly with Node. It is written from scratch based on the
