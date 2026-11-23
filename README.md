@@ -97,9 +97,9 @@ default. It requires `python3`, `zip`, `unzip`, and `web-ext` on `PATH`.
 ./build-all.sh --firefox             # Firefox XPI only
 ./build-all.sh --chrome              # Chrome ZIP only
 ./build-all.sh --out DIR             # change the output directory
-./build-all.sh --bump patch          # 1.0.1 -> 1.0.2, then build both targets
-./build-all.sh --bump minor --chrome # 1.0.1 -> 1.1.0, Chrome only
-./build-all.sh --bump major --crx    # 1.0.1 -> 2.0.0, with a local CRX
+./build-all.sh --bump patch          # 1.0.2 -> 1.0.3, then build both targets
+./build-all.sh --bump minor --chrome # 1.0.2 -> 1.1.0, Chrome only
+./build-all.sh --bump major --crx    # 1.0.2 -> 2.0.0, with a local CRX
 ```
 
 `--bump` requires `patch`, `minor`, or `major`. It updates `manifest.json`,
@@ -128,7 +128,7 @@ development files, and (when present) Mozilla signature metadata. An existing
 XPI can be checked directly:
 
 ```sh
-./build-all.sh --verify-xpi web-ext-artifacts/twitch-vod-unmute-firefox-1.0.1.xpi
+./build-all.sh --verify-xpi web-ext-artifacts/twitch-vod-unmute-firefox-1.0.2.xpi
 ```
 
 A local unsigned XPI works with **Load Temporary Add-on**, Developer Edition,
