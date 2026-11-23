@@ -48,11 +48,12 @@ Segments that Twitch has permanently purged remain muted; the extension cannot
 recreate audio that is no longer served by the CDN.
 
 Twitch can also list `N-unmuted` names in `index-dvr.m3u8` before the files are
-actually published (for example while a counter-notification is pending). In
-that case every probe returns `403 AccessDenied`, including the muted originals
-themselves. The popup reports **“originals not published yet”** and the scan
-stops after a few wholly-forbidden segments instead of probing the whole VOD.
-Try again after Twitch publishes the unmuted files; there is no local workaround.
+actually published (for example while a counter-notification is pending). When
+that affects the whole VOD, every probe returns `403 AccessDenied` and the popup
+reports **“originals not published yet”** after the full scan. Try again after
+Twitch publishes the unmuted files; there is no local workaround. Availability
+can differ per segment and per quality, so the extension never stops early on a
+run of 403s — later segments may still be recoverable.
 
 ## Download
 
@@ -195,16 +196,17 @@ the playlist/probe layer. The Firefox-specific pieces are:
   playlists and probe unmuted segments with CORS-compatible requests.
 - Redirect keys ignore query strings/tokens on segment requests. Exact
 unmuted filenames are read from `index-dvr.m3u8` (with a token-preserving
-fallback) and are exhaustively probed before any legacy plain filename. This
-avoids multiplying requests for a segment that the DVR already identifies.
-Unmuted originals are not available for every quality, so codec-compatible
+fallback); each quality tries that exact name first, then the legacy plain
+`N.ts`/`N.mp4` name. Availability varies by quality, so codec-compatible
 higher qualities are checked even when the player selected a low quality. If
 the master playlist does not describe the selected quality (common for
 `chunked`), the whole ladder is tried with that quality first.
 - Playlists are deduplicated by tab and `origin + pathname`, so rotated player
 tokens do not queue duplicate full scans.
-- Probes send only `Range: bytes=0-1`. Extra cache headers can make Twitch's
-CDN reject an otherwise available segment with 403.
+- Probes are plain CORS GETs with no custom request headers, cancelled after
+the response headers arrive. `Range` is not CORS-safelisted: on this CDN it
+triggers a preflight that returns `403` for objects an ordinary GET serves with
+`200`. Extra cache headers cause the same failure.
 - `browser.storage.sync` for settings and `browser.storage.session` for
   per-session redirects, positive probe results, and statistics.
 

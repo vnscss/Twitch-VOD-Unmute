@@ -33,10 +33,6 @@
   const MAX_PROBES_PER_SEGMENT = 14;
   const MAX_PROBES_PER_SCAN = 3000;
   const CHECKED_SEGMENT_LIMIT = 2000;
-  // Twitch can list `N-unmuted.ts` in index-dvr before the objects are actually
-  // published. If the first few segments are 403 across every candidate, more
-  // probes will not help; stop instead of spending the full probe budget.
-  const ALL_FORBIDDEN_SEGMENT_LIMIT = 5;
 
   function createBackground(options) {
     const settings = options || {};
@@ -421,12 +417,11 @@
         const controller = new AbortController();
         const timer = setTimeout(() => controller.abort(), 6000);
         try {
-          // Only ask for Range. Extra headers such as Cache-Control/Pragma can
-          // trigger a CDN preflight that Twitch rejects with 403.
-          response = await fetch(url, {
-            headers: { Range: 'bytes=0-1' },
-            signal: controller.signal
-          });
+          // A plain GET is CORS-safelisted. `Range` is not, and Twitch's CDN
+          // rejects the preflight (or the ranged request itself) with 403 for
+          // objects that an ordinary GET happily serves with 200. No custom
+          // request headers here: extra cache headers cause the same failure.
+          response = await fetch(url, { signal: controller.signal });
           clearTimeout(timer);
           break;
         } catch (_) {
@@ -834,8 +829,6 @@
       let dvrRestored = 0;
       let cursor = 0;
       let scanProbes = 0;
-      let consecutiveForbidden = 0;
-      let stopReason = null;
 
       function noteOutcome(outcome) {
         const errors = outcome.errors || 0;
@@ -849,68 +842,51 @@
       async function worker() {
         while (cursor < parsed.segments.length) {
           assertActive(signal);
-          if (stopReason) return;
           const segment = parsed.segments[cursor++];
           let found = null;
           let segmentProbes = 0;
-          let forbiddenProbes = 0;
           const exactName = unmutedNames[String(segment.number)];
+          const fallbackNames = Core.unmutedNameCandidates(segment.name)
+            .filter(name => name !== exactName);
 
-          async function tryName(quality, name) {
+          async function tryName(quality, name, fromDvr) {
             if (segmentProbes >= MAX_PROBES_PER_SEGMENT ||
                 scanProbes >= MAX_PROBES_PER_SCAN) return null;
             const target = Core.buildUnmutedUrl(url, segment.name, quality, name);
             const outcome = await probe(tabId, target, token);
             segmentProbes++;
             scanProbes++;
-            if (outcome.status === 403) forbiddenProbes++;
             noteOutcome(outcome);
-            return Core.isAvailable(outcome.status) ? { quality, target } : null;
+            return Core.isAvailable(outcome.status)
+              ? { quality, target, fromDvr }
+              : null;
           }
 
-          // Exact names from index-dvr are far more reliable than guessing.
-          // Exhaust them across qualities before sending any plain-name probes.
-          if (exactName) {
-            for (const quality of candidates) {
-              assertActive(signal);
-              const hit = await tryName(quality, exactName);
-              if (stopReason) return;
+          // Prefer the exact index-dvr filename inside each quality, but check
+          // the legacy plain name in that same quality before moving on. A
+          // stale DVR name must not consume the whole probe budget first.
+          // Availability varies by quality, so the entire compatible ladder is
+          // always searched; a leading run of 403s says nothing about the rest
+          // of the VOD.
+          for (const quality of candidates) {
+            assertActive(signal);
+            if (exactName) {
+              const hit = await tryName(quality, exactName, true);
               if (hit) {
-                found = Object.assign({ fromDvr: true }, hit);
+                found = hit;
                 break;
               }
             }
-          }
-
-          if (!found && !stopReason) {
-            const fallbackNames = Core.unmutedNameCandidates(segment.name)
-              .filter(name => name !== exactName);
-            for (const quality of candidates) {
-              for (const name of fallbackNames) {
-                assertActive(signal);
-                const hit = await tryName(quality, name);
-                if (stopReason) return;
-                if (hit) {
-                  found = Object.assign({ fromDvr: false }, hit);
-                  break;
-                }
+            for (const name of fallbackNames) {
+              assertActive(signal);
+              const hit = await tryName(quality, name, false);
+              if (hit) {
+                found = hit;
+                break;
               }
-              if (found || stopReason) break;
             }
+            if (found) break;
           }
-
-          // A whole segment failing with 403 (rather than one missing filename)
-          // means Twitch has not published the originals for that time range.
-          if (!found && segmentProbes > 0 && forbiddenProbes === segmentProbes &&
-              dvrHasNames && restored === 0) {
-            consecutiveForbidden++;
-            if (consecutiveForbidden >= ALL_FORBIDDEN_SEGMENT_LIMIT) {
-              stopReason = 'unmuted originals not published yet';
-            }
-          } else {
-            consecutiveForbidden = 0;
-          }
-          if (stopReason) return;
 
           const mutedUrl = url.replace(/[^/]*$/, segment.name);
           const key = segmentKey(mutedUrl);
@@ -943,6 +919,14 @@
       await putRedirects(redirects);
       await rememberTabUrls(tabId, touchedKeys);
 
+      const statusCounts = Object.assign({}, diag.statusCounts);
+      const successfulProbes = (statusCounts['200'] || 0) + (statusCounts['206'] || 0);
+      // Only the completed scan can say the originals are unpublished. A run of
+      // 403s at the start of a VOD is common while later segments are available.
+      const unpublished = restored === 0 && successfulProbes === 0 &&
+        (statusCounts['403'] || 0) > 0;
+      const reason = unpublished ? 'unmuted originals not published yet' : null;
+
       const stats = {
         tabId,
         mode: 'vod',
@@ -957,10 +941,9 @@
         failedProbes: diag.failedProbes,
         requests: diag.requests,
         waitedSegments: diag.waitedSegments,
-        statusCounts: Object.assign({}, diag.statusCounts),
-        probeStatus: stopReason ? 'forbidden' : 'checked',
-        truncated: Boolean(stopReason),
-        reason: stopReason || undefined,
+        statusCounts,
+        probeStatus: unpublished ? 'forbidden' : 'checked',
+        reason: reason || undefined,
         durationMs: Date.now() - startedAt,
         activeScan: false,
         at: Date.now()
@@ -970,21 +953,19 @@
       await sessionSet('stats', allStats);
       await recordDiagnostics(tabId, {
         mode: 'vod',
-        reason: stopReason || 'scan finished',
+        reason: reason || 'scan finished',
         dvrStatus: diag.dvrStatus,
         dvrNames: diag.dvrNames,
         dvrRequests: diag.dvrRequests,
         requests: diag.requests,
-        statusCounts: stats.statusCounts,
+        statusCounts,
         probeStatus: stats.probeStatus,
         waitedSegments: diag.waitedSegments,
         durationMs: stats.durationMs
       });
       console.log('[tvu]', tabId, restored + '/' + parsed.segments.length + ' segments restored');
 
-      // A truncated scan has no meaningful seekbar bands; only the checked
-      // prefix was probed and nothing was recovered.
-      if (settings.seekbar && results.length && !stopReason) {
+      if (settings.seekbar && results.length) {
         assertActive(signal);
         const bands = Core.buildSeekbarBands(results, parsed.lastNumber);
         await inject(tabId, paintSeekbar, [bands, {

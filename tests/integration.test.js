@@ -75,6 +75,7 @@ function createHarness({
   pageUrl = null,
   playlistUrlOverride = null,
   allForbidden = false,
+  rangeForbidden = false,
   playlistText = PLAYLIST
 } = {}) {
   const playlistUrl = (playlistUrlOverride || PLAYLIST_URL) + playlistToken;
@@ -133,9 +134,15 @@ function createHarness({
   }
 
   const probeCalls = [];
+  const isSegmentUrl = url => /\.(ts|mp4)(?:[?#]|$)/i.test(String(url));
   const fetchMock = async (url, options) => {
-    if (options && options.headers && options.headers.Range) {
+    if (isSegmentUrl(url)) {
       probeCalls.push({ url, options });
+      // Twitch rejects Range probes with 403 for objects that a plain GET
+      // serves successfully. Reproduce that behaviour when requested.
+      if (rangeForbidden && options && options.headers && options.headers.Range) {
+        return response(false, 403, '');
+      }
       if (allForbidden) return response(false, 403, '');
     }
     return responses.get(url) || response(false, 404, '');
@@ -266,7 +273,6 @@ test('redirects available segments and leaves purged ones muted', async () => {
   assert.equal(stats.stats.lowerQuality, 0);
   assert.equal(stats.stats.dvrRestored, 0);
   assert.equal(stats.stats.probeStatus, 'checked');
-  assert.equal(stats.stats.truncated, false);
 });
 
 test('uses exact unmuted filenames from the DVR playlist', async () => {
@@ -301,17 +307,28 @@ test('falls back to plain filenames when the DVR playlist is missing', async () 
   ].endsWith('/0.ts'), true);
 });
 
-test('probes with only the Range header', async () => {
+test('probes with a plain GET and no custom headers', async () => {
   const harness = createHarness();
   await scan(harness);
 
   assert.ok(harness.probeCalls.length > 0, 'probe requests were recorded');
   for (const call of harness.probeCalls) {
-    assert.deepEqual(Object.keys(call.options).sort(), ['headers', 'signal']);
-    assert.deepEqual(JSON.parse(JSON.stringify(call.options.headers)),
-      { Range: 'bytes=0-1' });
+    assert.deepEqual(Object.keys(call.options).sort(), ['signal']);
+    assert.equal(call.options.headers, undefined);
     assert.equal(Object.prototype.hasOwnProperty.call(call.options, 'cache'), false);
   }
+});
+
+test('restores segments whose CDN objects reject Range probes', async () => {
+  const harness = createHarness({ rangeForbidden: true });
+  await scan(harness);
+
+  assert.ok(harness.probeCalls.length > 0);
+  const answer = await harness.listeners.message[0]({
+    type: 'tvu:stats', tabId: TAB_ID
+  });
+  assert.equal(answer.stats.restored, 2);
+  assert.equal(answer.stats.probeStatus, 'checked');
 });
 
 test('redirects segment requests that carry query tokens', async () => {
@@ -695,7 +712,7 @@ test('a real VOD playlist on a popout keeps VOD diagnostics', async () => {
   assert.notEqual(answer.diagnostics.mode, 'live');
 });
 
-test('stops early when Twitch has not published unmuted originals', async () => {
+test('reports unpublished originals only after a full all-403 scan', async () => {
   const harness = createHarness({
     allForbidden: true,
     availableDvr: [0, 1, 2, 3],
@@ -705,13 +722,16 @@ test('stops early when Twitch has not published unmuted originals', async () => 
   await scan(harness);
 
   assert.ok(harness.probeCalls.length > 0);
-  assert.ok(harness.probeCalls.length < 110,
-    'early stop must avoid a full 110-segment probe sweep');
+  const numbers = new Set(harness.probeCalls.map(call => {
+    const match = /\/(\d+)(?:-unmuted)?\.ts$/.exec(call.url);
+    return match && match[1];
+  }));
+  assert.equal(numbers.size, 7, 'every segment must be probed before diagnosing');
+
   const answer = await harness.listeners.message[0]({
     type: 'tvu:stats', tabId: TAB_ID
   });
   assert.equal(answer.stats.restored, 0);
-  assert.equal(answer.stats.truncated, true);
   assert.equal(answer.stats.probeStatus, 'forbidden');
   assert.ok(answer.stats.statusCounts['403'] > 0);
   assert.equal(answer.diagnostics.reason, 'unmuted originals not published yet');

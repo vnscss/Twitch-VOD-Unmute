@@ -51,11 +51,16 @@ PAGE = '''<!doctype html>
   try {
     await fetch(playlist, { cache: 'no-store' });
     for (const name of ['0-muted.ts', '1-muted.ts', '2-muted.ts']) {
-      await fetch(playlist.replace(/[^/]*$/, name), { cache: 'no-store' });
+      await fetch(playlist.replace(/[^/]*$/, name), {
+        cache: 'no-store', headers: { Range: 'bytes=0-1' }
+      });
     }
-    // A live playlist with the same filename pattern must be ignored.
+    // A live playlist with the same filename pattern must be ignored. Range
+    // marks these as player requests; the extension's probes send no headers.
     await fetch(livePlaylist, { cache: 'no-store' });
-    await fetch(livePlaylist.replace(/[^/]*$/, '12-muted.ts'), { cache: 'no-store' });
+    await fetch(livePlaylist.replace(/[^/]*$/, '12-muted.ts'), {
+      cache: 'no-store', headers: { Range: 'bytes=0-1' }
+    });
     document.getElementById('result').textContent = 'done';
   } catch (error) {
     document.getElementById('result').textContent = 'error: ' + error;
@@ -74,7 +79,8 @@ class Handler(BaseHTTPRequestHandler):
         pass
 
     def do_OPTIONS(self):
-        # Twitch's CDN allows Range from the page; mimic that for probes.
+        # Probes are plain GETs and need no preflight; keep OPTIONS support so a
+        # browser that still probes one cannot fail the smoke test.
         self.send_response(204)
         self.send_header('Access-Control-Allow-Origin', '*')
         self.send_header('Access-Control-Allow-Headers', 'Range, Content-Type')
@@ -83,8 +89,12 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
 
     def do_GET(self):
-        # Probes send Range: bytes=0-1; real player segment requests do not.
-        entry = (self.path, self.headers.get('Range'))
+        # The synthetic player sends Range on segment requests; the extension's
+        # probes are plain GETs with no custom request headers.
+        marker = None
+        if self.path.endswith('.ts'):
+            marker = 'player' if self.headers.get('Range') else 'probe'
+        entry = (self.path, marker)
         with Handler.lock:
             Handler.request_log.append(entry)
 
@@ -204,25 +214,25 @@ def main() -> int:
         playlist_path = '/vod/12345/720p60/index-muted-ABC.m3u8'
         dvr_path = '/vod/12345/720p60/index-dvr.m3u8'
         live_playlist_path = '/live/chan/index-muted-LIVE.m3u8'
-        # Probes carry Range: bytes=0-1. Player requests do not. The exact
-        # unmuted filenames come from index-dvr.m3u8 and must be used for the
-        # redirects; the purged middle segment stays muted.
+        # Probes are plain GETs; player requests carry Range. The exact unmuted
+        # filenames come from index-dvr.m3u8 and must be used for the redirects;
+        # the purged middle segment stays muted.
         expected = [
             (playlist_path, None),
             (dvr_path, None),
-            ('/vod/12345/720p60/0-unmuted.ts', 'bytes=0-1'),
-            ('/vod/12345/720p60/1.ts', 'bytes=0-1'),
-            ('/vod/12345/720p60/2-unmuted.ts', 'bytes=0-1'),
-            ('/vod/12345/720p60/0-unmuted.ts', None),
-            ('/vod/12345/720p60/1-muted.ts', None),
-            ('/vod/12345/720p60/2-unmuted.ts', None),
+            ('/vod/12345/720p60/0-unmuted.ts', 'probe'),
+            ('/vod/12345/720p60/1.ts', 'probe'),
+            ('/vod/12345/720p60/2-unmuted.ts', 'probe'),
+            ('/vod/12345/720p60/0-unmuted.ts', 'player'),
+            ('/vod/12345/720p60/1-muted.ts', 'player'),
+            ('/vod/12345/720p60/2-unmuted.ts', 'player'),
             (live_playlist_path, None),
-            ('/live/chan/12-muted.ts', None),
+            ('/live/chan/12-muted.ts', 'player'),
         ]
         forbidden = [
             ('/live/chan/index-dvr.m3u8', None),
-            ('/live/chan/12-unmuted.ts', 'bytes=0-1'),
-            ('/live/chan/12.ts', 'bytes=0-1'),
+            ('/live/chan/12-unmuted.ts', 'probe'),
+            ('/live/chan/12.ts', 'probe'),
         ]
         deadline = time.time() + 45
         seen = []
@@ -247,17 +257,17 @@ def main() -> int:
     server.server_close()
 
     print('requests observed:')
-    for path, range_header in seen:
-        print(' ', path, 'Range=' + str(range_header))
+    for path, marker in seen:
+        print(' ', path, 'marker=' + str(marker))
 
     missing = [item for item in expected if item not in seen]
     leaked = [item for item in forbidden if item in seen]
     if leaked:
         missing.append('ERROR: live traffic was touched: ' + repr(leaked))
-    if ('/vod/12345/720p60/1.ts', None) in seen:
+    if ('/vod/12345/720p60/1.ts', 'player') in seen:
         missing.append('ERROR: purged segment 1 was incorrectly redirected')
     for name in ('0-muted.ts', '2-muted.ts'):
-        if ('/vod/12345/720p60/' + name, None) in seen:
+        if ('/vod/12345/720p60/' + name, 'player') in seen:
             missing.append('ERROR: ' + name + ' was not redirected in time')
     if missing:
         print('SMOKE TEST FAILED. Missing:', missing, file=sys.stderr)

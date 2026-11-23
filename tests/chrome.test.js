@@ -46,6 +46,7 @@ function createHarness({
   pageUrl = null,
   playlistUrlOverride = null,
   allForbidden = false,
+  rangeForbidden = false,
   playlistText = PLAYLIST
 } = {}) {
   const playlistUrl = playlistUrlOverride || PLAYLIST_URL;
@@ -87,9 +88,13 @@ function createHarness({
     }
   }
 
+  const isSegmentUrl = url => /\.(ts|mp4)(?:[?#]|$)/i.test(String(url));
   const fetchMock = async (url, options) => {
-    if (allForbidden && options && options.headers && options.headers.Range) {
-      return response(false, 403, '');
+    if (isSegmentUrl(url)) {
+      if (rangeForbidden && options && options.headers && options.headers.Range) {
+        return response(false, 403, '');
+      }
+      if (allForbidden) return response(false, 403, '');
     }
     return responses.get(url) || response(false, 404, '');
   };
@@ -252,6 +257,16 @@ test('a real vod-secure playlist generates scoped DNR rules', async () => {
   assert.equal(stats.diagnostics.mode, 'vod');
 });
 
+test('restores segments whose CDN objects reject Range probes', async () => {
+  const harness = createHarness({ rangeForbidden: true });
+  await startScan(harness);
+
+  assert.equal(harness.getSessionRules().length, 2);
+  const stats = await statsFor(harness);
+  assert.equal(stats.stats.restored, 2);
+  assert.equal(stats.stats.probeStatus, 'checked');
+});
+
 test('unpublished unmuted originals create no DNR rules', async () => {
   const harness = createHarness({
     allForbidden: true,
@@ -264,7 +279,6 @@ test('unpublished unmuted originals create no DNR rules', async () => {
   const stats = await statsFor(harness);
   assert.equal(stats.stats.restored, 0);
   assert.equal(stats.stats.probeStatus, 'forbidden');
-  assert.equal(stats.stats.truncated, true);
   assert.equal(stats.diagnostics.reason, 'unmuted originals not published yet');
 });
 
