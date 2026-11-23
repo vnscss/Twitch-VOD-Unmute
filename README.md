@@ -61,8 +61,8 @@ For ready-to-install packages, use the
 [latest GitHub release](https://github.com/vnscss/Twitch-VOD-Unmute/releases/latest)
 instead of building from source:
 
-- **Firefox:** [twitch-vod-unmute-firefox-1.0.1.xpi](https://github.com/vnscss/Twitch-VOD-Unmute/releases/download/latest/twitch-vod-unmute-firefox-1.0.1.xpi)
-- **Chrome:** [twitch-vod-unmute-chrome-1.0.1.zip](https://github.com/vnscss/Twitch-VOD-Unmute/releases/download/latest/twitch-vod-unmute-chrome-1.0.1.zip)
+- **Firefox:** [twitch-vod-unmute-firefox-1.0.2.xpi](https://github.com/vnscss/Twitch-VOD-Unmute/releases/download/v1.0.2/twitch-vod-unmute-firefox-1.0.2.xpi)
+- **Chrome:** [twitch-vod-unmute-chrome-1.0.2.zip](https://github.com/vnscss/Twitch-VOD-Unmute/releases/download/v1.0.2/twitch-vod-unmute-chrome-1.0.2.zip)
 
 The release page has the installation steps. AMO review is still pending, so use
 the release XPI above for now. Asset filenames change with each version — the
