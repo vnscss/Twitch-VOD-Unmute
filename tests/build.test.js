@@ -45,6 +45,14 @@ function assertVersions(dir, expected) {
     assert.equal(versionIn(dir, file), expected, file);
   }
 }
+
+function bumped(version, level) {
+  const [major, minor, patch] = version.split('.').map(Number);
+  if (level === 'patch') return `${major}.${minor}.${patch + 1}`;
+  if (level === 'minor') return `${major}.${minor + 1}.0`;
+  return `${major + 1}.0.0`;
+}
+
 const ff = JSON.parse(fs.readFileSync(path.join(root, 'manifest.firefox.json'), 'utf8'));
 const chrome = JSON.parse(fs.readFileSync(path.join(root, 'manifest.chrome.json'), 'utf8'));
 
@@ -110,58 +118,68 @@ test('shared runtime scripts referenced by both targets exist', () => {
 
 test('--bump updates all three manifests and names artifacts with the new version', (t) => {
   const dir = makeBuildDir(t);
-  assertVersions(dir, '1.0.0');
+  const base = versionIn(dir, 'manifest.json');
+  assertVersions(dir, base);
+  const next = bumped(base, 'patch');
 
   runBuild(dir, ['--bump', 'patch', '--chrome', '--no-verify']);
 
-  assertVersions(dir, '1.0.1');
+  assertVersions(dir, next);
   assert.ok(fs.existsSync(path.join(
-    dir, 'web-ext-artifacts', 'twitch-vod-unmute-chrome-1.0.1.zip')));
+    dir, 'web-ext-artifacts', `twitch-vod-unmute-chrome-${next}.zip`)));
 });
 
 test('--bump follows semantic version rules', (t) => {
   const dir = makeBuildDir(t);
+  let expected = bumped(versionIn(dir, 'manifest.json'), 'patch');
 
   runBuild(dir, ['--bump', 'patch', '--chrome', '--no-verify']);
-  assertVersions(dir, '1.0.1');
+  assertVersions(dir, expected);
 
+  expected = bumped(expected, 'minor');
   runBuild(dir, ['--bump', 'minor', '--chrome', '--no-verify']);
-  assertVersions(dir, '1.1.0');
+  assertVersions(dir, expected);
 
+  expected = bumped(expected, 'major');
   runBuild(dir, ['--bump', 'major', '--chrome', '--no-verify']);
-  assertVersions(dir, '2.0.0');
+  assertVersions(dir, expected);
   assert.ok(fs.existsSync(path.join(
-    dir, 'web-ext-artifacts', 'twitch-vod-unmute-chrome-2.0.0.zip')));
+    dir, 'web-ext-artifacts', `twitch-vod-unmute-chrome-${expected}.zip`)));
 });
 
 test('--bump edits only the version line in each manifest', (t) => {
   const dir = makeBuildDir(t);
+  const base = versionIn(dir, 'manifest.json');
+  const next = bumped(base, 'patch');
   const before = new Map(MANIFEST_FILES.map(file =>
     [file, fs.readFileSync(path.join(dir, file), 'utf8')]));
 
   runBuild(dir, ['--bump', 'patch', '--chrome', '--no-verify']);
 
   for (const file of MANIFEST_FILES) {
-    const expected = before.get(file).replace('"version": "1.0.0"', '"version": "1.0.1"');
+    const expected = before.get(file)
+      .replace(`"version": "${base}"`, `"version": "${next}"`);
     assert.equal(fs.readFileSync(path.join(dir, file), 'utf8'), expected, file);
   }
 });
 
 test('--bump rejects invalid or conflicting options without editing manifests', (t) => {
   const dir = makeBuildDir(t);
+  const base = versionIn(dir, 'manifest.json');
 
   assert.throws(() => runBuild(dir, ['--bump', 'foo', '--chrome', '--no-verify']));
-  assertVersions(dir, '1.0.0');
+  assertVersions(dir, base);
 
   assert.throws(() => runBuild(dir, ['--bump']));
-  assertVersions(dir, '1.0.0');
+  assertVersions(dir, base);
 
   assert.throws(() => runBuild(dir, ['--bump', 'patch', '--verify-xpi', 'missing.xpi']));
-  assertVersions(dir, '1.0.0');
+  assertVersions(dir, base);
 });
 
 test('--bump refuses inconsistent manifest versions', (t) => {
   const dir = makeBuildDir(t);
+  const base = versionIn(dir, 'manifest.json');
   const file = path.join(dir, 'manifest.chrome.json');
   const manifest = JSON.parse(fs.readFileSync(file, 'utf8'));
   manifest.version = '9.9.9';
@@ -169,7 +187,14 @@ test('--bump refuses inconsistent manifest versions', (t) => {
 
   assert.throws(() => runBuild(dir, ['--bump', 'patch', '--chrome', '--no-verify']));
 
-  assert.equal(versionIn(dir, 'manifest.json'), '1.0.0');
-  assert.equal(versionIn(dir, 'manifest.firefox.json'), '1.0.0');
+  assert.equal(versionIn(dir, 'manifest.json'), base);
+  assert.equal(versionIn(dir, 'manifest.firefox.json'), base);
   assert.equal(versionIn(dir, 'manifest.chrome.json'), '9.9.9');
+});
+
+test('README sends end users to the latest GitHub release', () => {
+  const readme = fs.readFileSync(path.join(root, 'README.md'), 'utf8');
+  assert.ok(readme.includes('https://github.com/vnscss/Twitch-VOD-Unmute/releases/latest'));
+  assert.ok(readme.includes('releases/download/latest/twitch-vod-unmute-firefox-'));
+  assert.ok(readme.includes('releases/download/latest/twitch-vod-unmute-chrome-'));
 });

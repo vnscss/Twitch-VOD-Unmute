@@ -54,7 +54,23 @@ themselves. The popup reports **“originals not published yet”** and the scan
 stops after a few wholly-forbidden segments instead of probing the whole VOD.
 Try again after Twitch publishes the unmuted files; there is no local workaround.
 
-## Install
+## Download
+
+For ready-to-install packages, use the
+[latest GitHub release](https://github.com/vnscss/Twitch-VOD-Unmute/releases/latest)
+instead of building from source:
+
+- **Firefox:** [twitch-vod-unmute-firefox-1.0.1.xpi](https://github.com/vnscss/Twitch-VOD-Unmute/releases/download/latest/twitch-vod-unmute-firefox-1.0.1.xpi)
+- **Chrome:** [twitch-vod-unmute-chrome-1.0.1.zip](https://github.com/vnscss/Twitch-VOD-Unmute/releases/download/latest/twitch-vod-unmute-chrome-1.0.1.zip)
+
+The release page has the installation steps. AMO review is still pending, so use
+the release XPI above for now. Asset filenames change with each version — the
+`/releases/latest` link always resolves to the current one.
+
+## Install from source (developers)
+
+The instructions below are for loading or building a local checkout. End users
+should download the current package from the release above.
 
 ### Temporary install (developer mode)
 
@@ -80,9 +96,9 @@ default. It requires `python3`, `zip`, `unzip`, and `web-ext` on `PATH`.
 ./build-all.sh --firefox             # Firefox XPI only
 ./build-all.sh --chrome              # Chrome ZIP only
 ./build-all.sh --out DIR             # change the output directory
-./build-all.sh --bump patch          # 1.0.0 -> 1.0.1, then build both targets
-./build-all.sh --bump minor --chrome # 1.0.0 -> 1.1.0, Chrome only
-./build-all.sh --bump major --crx    # 1.0.0 -> 2.0.0, with a local CRX
+./build-all.sh --bump patch          # 1.0.1 -> 1.0.2, then build both targets
+./build-all.sh --bump minor --chrome # 1.0.1 -> 1.1.0, Chrome only
+./build-all.sh --bump major --crx    # 1.0.1 -> 2.0.0, with a local CRX
 ```
 
 `--bump` requires `patch`, `minor`, or `major`. It updates `manifest.json`,
@@ -111,7 +127,7 @@ development files, and (when present) Mozilla signature metadata. An existing
 XPI can be checked directly:
 
 ```sh
-./build-all.sh --verify-xpi web-ext-artifacts/twitch-vod-unmute-firefox-1.0.0.xpi
+./build-all.sh --verify-xpi web-ext-artifacts/twitch-vod-unmute-firefox-1.0.1.xpi
 ```
 
 A local unsigned XPI works with **Load Temporary Add-on**, Developer Edition,
